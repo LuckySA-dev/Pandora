@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS mgmt_domains (
 CREATE TABLE IF NOT EXISTS mgmt_members (
   device_id INTEGER PRIMARY KEY REFERENCES devices(id), backbone_id INTEGER NOT NULL, ip TEXT NOT NULL UNIQUE
 );
+CREATE TABLE IF NOT EXISTS mgmt_config (device_id INTEGER PRIMARY KEY REFERENCES devices(id), lines TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS samples_dev ON snmp_samples (device_id, ts);
 """
 

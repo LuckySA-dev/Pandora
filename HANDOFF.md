@@ -48,13 +48,14 @@ Verification (all green on 2026-11-25)
 - [x] `python scripts/mvp_check.py` (simulated lab) → 23/23
 - [x] `scripts/clab_check.py` on `lab/small.clab.yml` (real IOL, day-2) → 9/9
 - [x] `scripts/ztp_check.py` on `lab/ztp.clab.yml` (factory-blank IOL: DHCP, PnP, AutoInstall, console) → 5/5
-- [x] `scripts/clab_check.py lab/medium.clab.yml` (12 real IOL, parallel) → 9/9 (rerun after the SNMP fix: 9/9)
+- [x] `scripts/clab_check.py lab/medium.clab.yml` (12 real IOL, parallel) → 14/14 incl. management design + its compliance
 - [x] `python -m ruff check pandora tests scripts lab` clean
 
 - [x] **Management network wizard** (Management page, `pandora/mgmt.py`, `api/mgmt.py`, `web/js/views/mgmt.js`): after pre-config, choose L3 backbone(s) (one domain = VLAN + subnet each), members under them (suggested from CDP), review, apply. Proven on the medium IOL lab: d1/d2 backbones, 10 members incl. 2 routers via dot1Q subinterfaces, 20 trunk ports, all 12 reachable over SSH on their new addresses from one PC NIC (`clab_check.py lab/medium.clab.yml`, 13/13)
   - design: ops VLAN 99 stays (PC + every device already there, make-before-break); backbone = `ip routing` + SVI gateway + static routes to other domains via their ops IP; switch member = SVI + `ip default-gateway` (or static routes if it routes); router member = subinterface + routes to mgmt subnets only (no default route); trunks = shortest point-to-point CDP path, ops VLAN on backbone-to-backbone paths
   - lessons from real IOL: a port that hears several CDP neighbors is a shared segment (IOL e0/0, a real OOB mgmt switch) and must never be a trunk path; IOS answers some failures with "% Command rejected", so the push treats every `%` line except warnings as an error
-  - [ ] not yet: compliance doesn't include the design's lines (drift in them isn't flagged); removing the old VLAN 99 addresses is left to the operator; routers can't be backbones; an L2 path through a router is refused (cable members to switches)
+  - [x] compliance checks the design: `mgmt_config` stores what apply pushed per device (incl. per-port dot1q/native extras); `compliance.run` adds it to the intended config as feature **mgmt-design**, with IOS display rules (no allowed-VLAN list = all; split `allowed vlan` + `add` lines; `ip routing` hidden when default; design VLANs read from vlan.dat). Proven: medium lab 14/14, a removed `ip default-gateway` on a1 is flagged as mgmt-design and fixed by remediation
+  - [ ] not yet: removing the old VLAN 99 addresses is left to the operator; routers can't be backbones; an L2 path through a router is refused (cable members to switches)
 
 ## Not done / next
 

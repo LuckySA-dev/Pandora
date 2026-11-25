@@ -12,7 +12,7 @@ from . import alerts, backup
 from .alloc import expand_range, normalize_if
 from .db import mask_secrets
 
-FEATURES = ("hostname", "mgmt-vlan", "mgmt-ports", "access", "snmp", "role")
+FEATURES = ("hostname", "mgmt-vlan", "mgmt-ports", "access", "snmp", "mgmt-design", "role")
 STRICT = {"mgmt-vlan", "mgmt-ports"}  # extra lines here are drift too (someone shut our port)
 # Never visible in a running-config, or only as a hash: compare can't judge them.
 _SKIP = re.compile(r"^(crypto key generate|snmp-server user |event manager applet PANDORA-SAVE|end$)")
@@ -27,7 +27,8 @@ _IGNORE = [re.compile(p) for p in (
     r"^ logging event subif-link-status$", r"^\s*ipv6 unreachables disable$", r"^end$", r"^\s*[#!].*",
     r"^ no ip address", r"^ exit-peer-policy", r"^ exit-peer-session", r"^ exit-address-family",
     r"^crypto key generate rsa general-keys.*$",
-    r"^ip ssh version 2$")]  # IOS-XE 17.x has only v2 and no longer prints it
+    r"^ip ssh version 2$",  # IOS-XE 17.x has only v2 and no longer prints it
+    r"^ip routing$")]  # on by default on L3 images, and then not printed: the compare can't judge it
 # Commands where a new value replaces the old one, so no "no <old value>" is needed first.
 _IDEMPOTENT = [(r"^vlan", r"^name "), (r"^interface ", r"^description "), (r"^interface ", r"^ip address "),
                (r"^interface ", r"^switchport mode "), (r"^interface ", r"^authentication host-mode "),
@@ -94,7 +95,34 @@ def _norm(line: str) -> str:
     return line
 
 
-def _feature(parent: str, reserved: set[str], vlan: int) -> str:
+def _allows(children: list[str], want: str) -> bool:
+    """`switchport trunk allowed vlan add 10,99` holds if the port's list contains them. IOS prints no list when
+    all VLANs are allowed, and splits a long one over `... allowed vlan 1-5` + `... allowed vlan add 7`."""
+    lists = [c.rsplit(" ", 1)[1] for c in children if c.startswith("switchport trunk allowed vlan ")]
+    if not lists or any(x.lower() == "all" for x in lists):
+        return True
+    have = set()
+    for spec in ",".join(x for x in lists if x.lower() != "none").split(","):
+        a, _, b = spec.partition("-")
+        if a.isdigit():
+            have |= set(range(int(a), int(b or a) + 1))
+    return all(int(v) in have for v in want.split(",") if v.isdigit())
+
+
+def _held(k: str, children: list[str]) -> bool:
+    """Is intended child `k` satisfied by these running children, given how IOS prints things?"""
+    if k in children:
+        return True
+    if k == "no shutdown":  # IOS never prints the default: it holds unless the box shows "shutdown"
+        return "shutdown" not in children
+    if k.startswith("switchport trunk allowed vlan add "):
+        return _allows(children, k.rsplit(" ", 1)[1])
+    return False
+
+
+def _feature(parent: str, reserved: set[str], vlan: int, design: set[str] = frozenset()) -> str:
+    if parent in design:  # what the management design wizard pushed (see mgmt.py)
+        return "mgmt-design"
     if parent.startswith("hostname "):
         return "hostname"
     if parent in (f"vlan {vlan}", f"interface Vlan{vlan}") or parent.startswith(("ip default-gateway", "ip route 0.0.0.0")):
@@ -124,13 +152,17 @@ def _vtp_vlans(ctx, dev) -> str:
     return "".join(f"\nvlan {m[1]}\n name {m[2]}" for m in re.finditer(r"^(\d+)\s+(\S+)\s+(?:active|act/)", out, re.M))
 
 
-def compare(intended: str, running: str, reserved_ports: list[str], mgmt_vlan: int) -> dict:
+def compare(intended: str, running: str, reserved_ports: list[str], mgmt_vlan: int, design: str = "") -> dict:
+    """design: the management design lines for this device (mgmt_config), checked as their own feature."""
+    if design:
+        intended += "\n" + design
+    design_parents = {_norm(ln) for ln in design.splitlines() if ln.strip() and not ln.startswith(" ")}
     want, have = _blocks(intended), _blocks(running)
     reserved = {f"interface {normalize_if(p)}" for p in reserved_ports}
     feats = {f: {"name": f, "missing": [], "extra": []} for f in FEATURES}
     remediation = []
     for parent, kids in want.items():
-        f = feats[_feature(parent, reserved, mgmt_vlan)]
+        f = feats[_feature(parent, reserved, mgmt_vlan, design_parents)]
         if parent not in have and not _covered(parent, have):
             f["missing"] += [parent] + [f" {k}" for k in kids]
             if not _NO_PUSH.match(parent):
@@ -139,7 +171,7 @@ def compare(intended: str, running: str, reserved_ports: list[str], mgmt_vlan: i
         # IOS never prints "no shutdown" (the default): it holds unless the box shows "shutdown"
         if parent not in have:
             continue  # covered by a wider line IOS printed instead
-        missing = [k for k in kids if k not in have[parent] and not (k == "no shutdown" and "shutdown" not in have[parent])]
+        missing = [k for k in kids if not _held(k, have[parent])]
         extra = [k for k in have[parent] if k not in kids] if f["name"] in STRICT else []
         if missing or extra:
             f["missing"] += [f"{parent} > {k}" for k in missing]
@@ -152,7 +184,7 @@ def compare(intended: str, running: str, reserved_ports: list[str], mgmt_vlan: i
             lines.sort(key=lambda line: _weight(parent, line))  # stable: keeps "no" before "set" at equal weight
             remediation += [parent] + lines
     used = [f for f in feats.values() if f["missing"] or f["extra"] or
-            any(_feature(p, reserved, mgmt_vlan) == f["name"] for p in want)]
+            any(_feature(p, reserved, mgmt_vlan, design_parents) == f["name"] for p in want)]
     for f in used:
         f["compliant"] = not f["missing"] and not f["extra"]
     return {"compliant": all(f["compliant"] for f in used), "features": used, "remediation": remediation}
@@ -168,7 +200,11 @@ def run(ctx, device_id, refresh=True) -> dict:
     running = b["text"]
     if re.search(r"^vlan \d+$", intended, re.M) and not re.search(r"^vlan \d+$", running, re.M):
         running += _vtp_vlans(ctx, ctx.db.device(device_id))
-    res = compare(mask_secrets(intended), running, a["reserved_ports"], ctx.cfg["mgmt_vlan"])
+    design = ctx.db.q("SELECT lines FROM mgmt_config WHERE device_id=?", device_id)
+    design = design[0]["lines"] if design else ""
+    if re.search(r"^vlan \d+$", design, re.M) and not re.search(r"^vlan \d+$", running, re.M):
+        running += _vtp_vlans(ctx, ctx.db.device(device_id))  # the design's VLANs live in vlan.dat too
+    res = compare(mask_secrets(intended), running, a["reserved_ports"], ctx.cfg["mgmt_vlan"], design)
     res.update(ts=time.time(), backup_id=b["id"])
     ctx.db.x("INSERT OR REPLACE INTO compliance (device_id, ts, result) VALUES (?,?,?)",
              device_id, res["ts"], json.dumps(res))

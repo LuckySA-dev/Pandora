@@ -164,7 +164,7 @@ function config(st) {
 }
 
 const featureName = (n) => ({ hostname: "Hostname", "mgmt-vlan": "Management VLAN", "mgmt-ports": "Management ports",
-  access: "Login and SSH", snmp: "SNMP", role: "Role configuration" }[n] || n);
+  access: "Login and SSH", snmp: "SNMP", "mgmt-design": "Management network", role: "Role configuration" }[n] || n);
 
 const diffView = (text) => html`<pre class="diff">${text ? text.split("\n").map((l) =>
   html`<span class="${l.startsWith("@@") ? "hunk" : l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : ""}">${l}\n</span>`) : "These two versions are identical."}</pre>`;

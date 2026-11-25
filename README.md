@@ -51,6 +51,8 @@ The **Management** page is a wizard for the network you manage the devices throu
 3. **Review:** the exact lines per device, the ports that become trunks (shortest point-to-point path to the backbone, never a reserved PC port or a shared segment), and the routes to add on the PC.
 4. **Apply:** backbones first, then everyone else. Every device gets its own SSH address in its domain (switches: an SVI and default gateway; routers: a dot1Q subinterface on the uplink plus routes, never a default route). PandoraBox switches to the new address only once SSH answers there.
 
+Compliance then checks the design too (feature *Management network*): a pruned trunk VLAN, a removed gateway or a changed SVI shows as drift, with a fix plan.
+
 The PC keeps its one LAN card on the pre-config management VLAN (99) and reaches each domain through that domain's backbone. Nothing existing is removed, so the old addresses keep working while you check.
 
 ## Safety rails

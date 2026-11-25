@@ -251,10 +251,10 @@ def _push(ctx, d) -> dict:
                 lines += _trunk_extras(ctx, dev, ln[len("interface "):])
         out = ctx.ssh_config(dev, lines)
     except Exception as e:
-        return {"id": d["id"], "pushed": False, "error": f"{type(e).__name__}: {e}"}
+        return {"id": d["id"], "pushed": False, "error": f"{type(e).__name__}: {e}", "lines": d["lines"]}
     errors = [ln.strip() for ln in out.splitlines() if ERROR.match(ln)]
     ctx.db.save_config(d["id"], "mgmt", "\n".join(lines), "; ".join(errors) or "ok")
-    return {"id": d["id"], "pushed": not errors, "error": "; ".join(errors)}
+    return {"id": d["id"], "pushed": not errors, "error": "; ".join(errors), "lines": lines}
 
 
 def apply(ctx, p: dict, verify_timeout=90) -> list[dict]:
@@ -269,6 +269,9 @@ def apply(ctx, p: dict, verify_timeout=90) -> list[dict]:
     with ctx.db.lock:
         ctx.db.x("DELETE FROM mgmt_domains")
         ctx.db.x("DELETE FROM mgmt_members")
+        ctx.db.x("DELETE FROM mgmt_config")
+        for i, r in res.items():  # what compliance expects from now on (also when a push failed: that's drift)
+            ctx.db.x("INSERT INTO mgmt_config (device_id, lines) VALUES (?,?)", i, "\n".join(r.pop("lines")))
         for x in p["domains"]:
             ctx.db.x("INSERT INTO mgmt_domains (backbone_id, vlan, subnet, gateway) VALUES (?,?,?,?)",
                      x["backbone"], x["vlan"], x["subnet"], x["gateway"])

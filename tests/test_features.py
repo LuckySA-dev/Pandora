@@ -324,3 +324,29 @@ def test_mgmt_design_keeps_reserved_ports_off_management_paths(ctx):
     edges[1] = {**edges[1], "to_port": "Ethernet0/3"}  # a1's uplink is its reserved PC port
     p = mgmt.plan(ctx, [{"backbone": ids["d1"], "vlan": 10, "subnet": "10.10.0.0/24"}], {ids["a1"]: ids["d1"]}, edges)
     assert not p["ok"] and any("reserved PC port" in x for x in p["problems"])
+
+
+def test_compliance_checks_the_management_design_as_ios_prints_it():
+    design = ("vlan 10\n name PANDORA-MGMT-10\ninterface Vlan10\n description PANDORA-MGMT via d1\n"
+              " ip address 10.10.0.10 255.255.255.0\n no shutdown\nip default-gateway 10.10.0.1\nip routing\n"
+              "interface Ethernet0/1\n switchport trunk encapsulation dot1q\n switchport mode trunk\n"
+              " switchport trunk allowed vlan add 10,99")
+    base = ("hostname a1\nvlan 10\n name PANDORA-MGMT-10\ninterface Vlan10\n description PANDORA-MGMT via d1\n"
+            " ip address 10.10.0.10 255.255.255.0\nip default-gateway 10.10.0.1\n")
+    trunk = "interface Ethernet0/1\n switchport trunk encapsulation dot1q\n switchport mode trunk\n"
+
+    def check(running):
+        r = compliance.compare("hostname a1", running, [], 99, design)
+        return r, {f["name"]: f["compliant"] for f in r["features"]}
+
+    r, f = check(base + trunk)  # all VLANs allowed: IOS prints no list; "ip routing" hidden by default
+    assert r["compliant"] and f["mgmt-design"], r
+    r, f = check(base + trunk + " switchport trunk allowed vlan 1-9\n switchport trunk allowed vlan add 10,99\n")
+    assert f["mgmt-design"], r  # a long list split over two lines still holds
+    r, f = check(base + trunk + " switchport trunk allowed vlan 1-5,10\n")  # someone pruned VLAN 99
+    assert not f["mgmt-design"] and " switchport trunk allowed vlan add 10,99" in r["remediation"]
+    r, f = check(base + "interface Ethernet0/1\n switchport mode access\n")  # the trunk was undone
+    assert not f["mgmt-design"] and " switchport mode trunk" in r["remediation"]
+    r, f = check(base.replace("ip default-gateway 10.10.0.1\n", "") + trunk)
+    assert not f["mgmt-design"] and "ip default-gateway 10.10.0.1" in r["remediation"]
+    assert f["hostname"]  # the rest of the device is judged as before

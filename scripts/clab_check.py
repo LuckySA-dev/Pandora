@@ -288,7 +288,22 @@ def mgmt_checks(ctx, lab, ids):
         drift = {n: [f["name"] for f in r["features"] if not f["compliant"]] for n, r in res.items() if not r["compliant"]}
         drift = {n: f for n, f in drift.items() if not (n in lab["router"] and f == ["mgmt-ports"])}
         assert not drift, drift
-        return f"{len(nodes)} logins over the management domains; compliant (routers: only the lab's shut port)"
+        designed = sum(any(f["name"] == "mgmt-design" for f in r["features"]) for r in res.values())
+        assert designed == len(nodes), f"only {designed} nodes have their design lines checked"
+        return (f"{len(nodes)} logins over the management domains; compliant incl. the design lines on all "
+                f"{designed} (routers: only the lab's shut port)")
+
+    @check("drift in the management design (a member lost its default gateway) -> detected -> fixed")
+    def _():
+        m = next(n for n in nodes if ids[n] not in bb and n not in lab["router"])
+        gw = next(x["gateway"] for x in st["plan"]["domains"] if x["backbone"] == st["members"][ids[m]])
+        ctx.ssh_config(ctx.db.device(ids[m]), [f"no ip default-gateway {gw}"])
+        res = compliance.run(ctx, ids[m])
+        bad = [f["name"] for f in res["features"] if not f["compliant"]]
+        assert bad == ["mgmt-design"] and f"ip default-gateway {gw}" in res["remediation"], (bad, res["remediation"])
+        fix = compliance.remediate(ctx, ids[m])
+        assert fix["result"]["compliant"], fix["result"]
+        return f"{m}: drift seen as mgmt-design, plan {res['remediation']}, compliant again"
 
 
 def _try(fn):
