@@ -220,3 +220,28 @@ def test_boot_config_only_for_the_box_itself_and_no_cross_site_api(ctx):
     local = {"host": "127.0.0.1"}
     assert ui_ok("127.0.0.1", local) and ui_ok("127.0.0.1", {**local, "sec-fetch-site": "same-origin"})
     assert not ui_ok("127.0.0.1", {**local, "sec-fetch-site": "cross-site"})  # <img src> from a web page
+
+
+def test_device_identity_guards_and_subnet_clash(ctx):
+    from types import SimpleNamespace
+
+    from pandora.net.pnp import _own
+    from pandora.preflight import clashes
+
+    def req(ip):
+        return SimpleNamespace(client=SimpleNamespace(host=ip))
+
+    con = ctx.db.upsert(serial="FOCCONSOLE1", pid="C9300-24P", console_port="COM7", path="console")
+    assert ctx.queue([con["id"]])[0]["queued"]
+    con = ctx.db.device(con["id"])
+    assert not _own(ctx.db, con, req("10.99.0.66"))  # selected box with no address: nobody may claim its serial
+    assert ctx.boot_config({**con, "ip": "10.99.0.66"}, "ztp", "10.99.0.66") is None  # console box: no ZTP file
+    pnp = ctx.db.upsert(serial="FOCPNP0001", pid="C9300-24P", ip="10.99.0.120", path="pnp")
+    assert ctx.queue([pnp["id"]])[0]["queued"]
+    pnp = ctx.db.device(pnp["id"])
+    mgmt = ctx.db.q("SELECT mgmt_ip FROM allocations WHERE device_id=?", pnp["id"])[0]["mgmt_ip"]
+    assert _own(ctx.db, pnp, req("10.99.0.120")) and not _own(ctx.db, pnp, req(mgmt))  # mgmt IP: not before config
+    ctx.db.set_state(pnp["id"], "provisioning", "PnP: config-upgrade sent")
+    assert _own(ctx.db, ctx.db.device(pnp["id"]), req(mgmt))  # after it: the agent reports from there
+    assert clashes("10.99.0.1/24", [("Wi-Fi", "192.168.1.5/24")]) == []
+    assert clashes("10.99.0.1/24", [("Wi-Fi", "10.99.0.50/16")]) == ["Wi-Fi 10.99.0.50/16"]

@@ -1,0 +1,4 @@
+xterm.js, @xterm/addon-fit: MIT License, Copyright (c) The xterm.js authors. https://github.com/xtermjs/xterm.js
+Atkinson Hyperlegible Next, Atkinson Hyperlegible Mono: SIL Open Font License 1.1, Braille Institute.
+Noto Sans Thai: SIL Open Font License 1.1, The Noto Project Authors.
+Fonts downloaded from Google Fonts; https://openfontlicense.org

@@ -137,8 +137,8 @@ class Ctx:
 
     # ---- device-pull paths (DHCP / PnP / ZTP / TFTP) -----------------------
     def boot_config(self, dev, method, client_ip=None) -> str | None:
-        if not dev or dev["state"] not in ("queued", "provisioning"):
-            return None
+        if not dev or dev["state"] not in ("queued", "provisioning") or (dev["path"] or method) != method:
+            return None  # not selected, or selected for another path (a console box gets no ZTP file)
         # The file holds the admin password and SNMP keys: only the box itself may fetch it, from the address
         # PandoraBox gave it (DHCP lease) or saw it call from (PnP). A neighbour that knows the serial gets nothing.
         if client_ip and dev["ip"] != client_ip:

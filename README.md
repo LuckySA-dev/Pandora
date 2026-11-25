@@ -105,4 +105,4 @@ What real IOS-XE 17.18 (IOL) taught us, now handled in the code:
 
 `python -m ruff check pandora tests scripts` runs the lint rules in `pyproject.toml`. `mvp_check.py` needs `pip install snmpsim pysmi`; add `--serve` to keep the simulated lab and the UI up on http://127.0.0.1:8099.
 
-Known limits: IOS/IOS-XE only (no NX-OS POAP / XR). PnP doesn't do image upgrades. DHCP doesn't support relays (giaddr). The UI loads fonts, xterm.js and vis-network from the internet.
+Known limits: IOS/IOS-XE only (no NX-OS POAP / XR). PnP doesn't do image upgrades. DHCP doesn't support relays (giaddr). The UI needs no internet: fonts and xterm.js are vendored in `pandora/web/vendor/` (`scripts/vendor_web.py` refreshes them).

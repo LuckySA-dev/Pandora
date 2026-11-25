@@ -5,14 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PandoraBox</title>
 <meta name="color-scheme" content="light dark">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;600;700&family=Atkinson+Hyperlegible+Mono:wght@400;500&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<!-- no CDN: fonts and xterm are vendored (scripts/vendor_web.py), the UI works offline -->
+<link rel="stylesheet" href="/web/vendor/fonts.css">
+<link rel="stylesheet" href="/web/vendor/xterm.css">
 <link rel="stylesheet" href="/web/css/app.css">
 <script>try { const t = localStorage.getItem("pandora.theme"); if (t) document.documentElement.dataset.theme = t; } catch {}</script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js" defer></script>
+<script src="/web/vendor/xterm.js" defer></script>
+<script src="/web/vendor/addon-fit.js" defer></script>
 <script type="module" src="/web/js/app.js"></script>
 </head>
 <body>

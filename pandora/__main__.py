@@ -65,6 +65,14 @@ def main():
         ok, why = iface_is_safe(cfg["iface"])
         if not ok:
             sys.exit(f"Refusing to start DHCP: {why}. Use --no-dhcp for console/SNMP/SSH only.")
+        from .preflight import foreign_dhcp
+        others = foreign_dhcp(cfg["iface"], cfg["server_ip"])
+        if others:  # the switch has an uplink to a real network: two DHCP servers = an outage for its users
+            sys.exit(f"Refusing to start DHCP: another DHCP server answers on {cfg['iface']!r} ({', '.join(others)}). "
+                     "Unplug the switch's uplink to the real network, or use --no-dhcp.")
+        if others is None:
+            log.warning("could not check for another DHCP server on %s (Npcap?): make sure the switch has no uplink",
+                        cfg["iface"])
         try:
             dhcp.DhcpServer(cfg["server_ip"], cfg["netmask"], config.ip_range(cfg["dhcp_range"]),
                             ctx.dhcp_decide, cfg["iface"]).start()

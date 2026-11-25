@@ -81,6 +81,62 @@ def check_network(cfg) -> list[tuple]:
     return out
 
 
+def clashes(ours: str, others: list[tuple[str, str]]) -> list[str]:
+    """Other NICs whose subnet overlaps the provisioning one: device traffic could leave by the wrong NIC."""
+    net = ipaddress.ip_network(ours, strict=False)
+    return [f"{alias} {cidr}" for alias, cidr in others if ipaddress.ip_network(cidr, strict=False).overlaps(net)]
+
+
+def check_other_nics(cfg) -> list[tuple]:
+    """A laptop on Wi-Fi/office LAN as well is fine, as long as that network is a different subnet."""
+    if sys.platform != "win32":
+        return []
+    import json
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                        "Get-NetIPAddress -AddressFamily IPv4 | Where-Object IPAddress -ne '127.0.0.1' | "
+                        "Select-Object InterfaceAlias, IPAddress, PrefixLength | ConvertTo-Json"],
+                       capture_output=True, text=True)
+    rows = json.loads(r.stdout or "[]")
+    rows = [rows] if isinstance(rows, dict) else rows
+    others = [(x["InterfaceAlias"], f"{x['IPAddress']}/{x['PrefixLength']}") for x in rows
+              if x["InterfaceAlias"] != cfg["iface"]]
+    ours = f"{cfg['server_ip']}/{cfg['netmask']}"
+    if bad := clashes(ours, others):
+        return [("fail", "other NICs", f"{', '.join(bad)} overlaps the provisioning subnet {ours}: device traffic "
+                                       "could go out the wrong NIC. Move server_ip/ranges to another subnet")]
+    return [("ok", "other NICs", (", ".join(f"{a} {c}" for a, c in others) or "none")
+             + ": separate subnets, internet stays on them")]
+
+
+def foreign_dhcp(iface: str, own_ip: str, timeout=4) -> list[str] | None:
+    """Send one DHCP DISCOVER out of `iface` and list the servers that answer, other than us.
+    Someone answering = the switch is cabled to a real network, and our DHCP would fight its router.
+    None = could not probe (no Npcap/raw access)."""
+    try:
+        from scapy.all import BOOTP, DHCP, IP, UDP, Ether, conf, get_if_hwaddr, srp
+        conf.checkIPaddr = False  # offers come from the server's address, not the broadcast we sent to
+        mac = get_if_hwaddr(iface)
+        pkt = (Ether(dst="ff:ff:ff:ff:ff:ff", src=mac) / IP(src="0.0.0.0", dst="255.255.255.255")
+               / UDP(sport=68, dport=67)
+               / BOOTP(chaddr=bytes.fromhex(mac.replace(":", "")), xid=0x50414E44, flags=0x8000)
+               / DHCP(options=[("message-type", "discover"), "end"]))
+        ans, _ = srp(pkt, iface=iface, timeout=timeout, multi=True, verbose=0)
+    except Exception:
+        return None
+    return sorted({r[IP].src for _, r in ans if DHCP in r and r[IP].src != own_ip})
+
+
+def check_segment(cfg) -> list[tuple]:
+    found = foreign_dhcp(cfg["iface"], cfg["server_ip"])
+    if found is None:
+        return [("warn", "DHCP on segment", "could not probe (Npcap missing or no raw access): make sure the switch "
+                                            "has no uplink to a real network")]
+    if found:
+        return [("fail", "DHCP on segment", f"another DHCP server answers on {cfg['iface']!r} ({', '.join(found)}): "
+                                            "the switch is connected to a real network. Unplug its uplink first")]
+    return [("ok", "DHCP on segment", "no other DHCP server answers: PandoraBox can serve here")]
+
+
 def check_windows(cfg) -> list[tuple]:
     if sys.platform != "win32":
         return []
@@ -124,7 +180,8 @@ def run(config_path) -> int:
     cfg = config.load(p)
     rows = [("ok", "config", str(p)) if p.exists() else
             ("warn", "config", f"{p} not found: defaults in use (copy pandora.toml.example)")]
-    for part in (check_secrets, check_ranges, check_network, check_windows, check_rest):
+    for part in (check_secrets, check_ranges, check_network, check_other_nics, check_segment, check_windows,
+                 check_rest):
         try:
             rows += part(cfg)
         except Exception as e:

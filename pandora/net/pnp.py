@@ -68,12 +68,15 @@ def _own(db, dev, request, strict=False) -> bool:
     address is the identity: once a box is selected (queued/provisioning) only its own addresses may speak for
     its serial: the one it called from / leased, or the mgmt IP we gave it (after the config is applied the
     PnP agent reports from there). strict: also before selection (reports about a box come from that box)."""
-    if not dev or not dev["ip"]:
-        return True
-    mine = {dev["ip"]} | {r["mgmt_ip"] for r in db.q("SELECT mgmt_ip FROM allocations WHERE device_id=?", dev["id"])}
+    selected = dev is not None and dev["state"] in ("queued", "provisioning")
+    if not dev or (not dev["ip"] and not selected):
+        return True  # discovery: a box we have no address for yet
+    mine = {dev["ip"]} - {None}
+    if dev["state"] == "provisioning":  # config already sent: the box may now speak from the mgmt IP we gave it
+        mine |= {r["mgmt_ip"] for r in db.q("SELECT mgmt_ip FROM allocations WHERE device_id=?", dev["id"])}
     if request.client.host in mine:
         return True
-    if strict or dev["state"] in ("queued", "provisioning"):
+    if strict or selected:
         log.warning("device %s (serial %s) is at %s, but %s spoke for it: ignored", dev["id"], dev["serial"],
                     dev["ip"], request.client.host)
         return False
@@ -157,7 +160,7 @@ def router(ctx) -> APIRouter:
     @r.get("/cfg/{serial}")
     def cfg_file(request: Request, serial: str):
         dev = ctx.db.find(serial=serial)
-        text = ctx.boot_config(dev, dev["path"], request.client.host) if dev else None
+        text = ctx.boot_config(dev, "pnp", request.client.host) if dev else None
         return Response(text, media_type="text/plain") if text else Response(status_code=404)
 
     # ---- IOS-XE ZTP --------------------------------------------------------
@@ -180,12 +183,13 @@ def router(ctx) -> APIRouter:
     @r.post("/ztp/done")
     async def ztp_done(request: Request):
         data = await request.json()
-        dev = ctx.db.find(serial=data.get("serial"), ip=request.client.host)
-        if dev and _own(ctx.db, dev, request, strict=True):
+        serial = data.get("serial") or ""
+        dev = ctx.db.find(serial=serial, ip=request.client.host) if serial else None
+        # the report must come from the box, and be about the box it came from: never let it name another row
+        if dev and _own(ctx.db, dev, request, strict=True) and dev["serial"] in (None, serial):
             facts = parse_show_version(data.get("version", ""))  # may itself contain serial/hostname
             facts.pop("hostname", None)
-            facts["serial"] = data.get("serial") or facts.get("serial")
-            ctx.db.upsert(ip=request.client.host, **facts)
+            ctx.db.upsert(ip=request.client.host, **{**facts, "serial": serial})
             if dev["state"] == "provisioning":
                 ctx.finish(dev["id"], "ztp", bool(data.get("ok")), data.get("error") or "ZTP applied + saved")
             ctx.emit("device", ctx.db.device(dev["id"]))

@@ -10,6 +10,15 @@ A step-by-step runbook for the first test of PandoraBox on real switches and rou
 - Ideally one box of each kind: an IOS-XE switch with PnP (Catalyst 9200/9300), a classic IOS switch (2960/3750), an IOS-XE router (ISR 4000 / Catalyst 8000), and one box that already has a config with SSH.
 - Nothing from the office network on this segment: PandoraBox runs a DHCP server on it.
 
+## Laptop on the internet as well
+
+That is fine and expected: keep Wi-Fi (or the office LAN) for the internet and use a **second NIC** for the Cisco gear. What matters:
+
+- **The dedicated NIC:** static IP, no gateway, nothing else on it. PandoraBox refuses to serve DHCP on a NIC that gets its address by DHCP or has a gateway, so plugging the switch into the NIC that has the internet is refused, not an outage.
+- **The switch under test must not be uplinked to a real network.** If it is, that network's DHCP server and PandoraBox's would both answer. PandoraBox sends one DHCP DISCOVER before it starts serving and refuses to run DHCP if anyone else answers (preflight shows the same check). Without Npcap this check can't run: then make sure yourself that the switch has no uplink.
+- **Different subnets:** if the Wi-Fi network is also 10.99.0.x, device traffic can leave by the wrong NIC. Preflight fails on an overlap; change `server_ip` and the ranges.
+- **The UI needs no internet:** fonts and the terminal library ship with the project.
+
 ## 1. Prepare the laptop (once)
 
 Give the dedicated NIC a static address and no gateway. Use the adapter name from `Get-NetAdapter`; in an Administrator PowerShell:

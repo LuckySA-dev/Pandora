@@ -55,12 +55,15 @@ Verification (all green on 2026-11-25)
 
 - [x] **Medium lab (12 IOL nodes) scale run**: 9/9, see the section at the end
 - [ ] **SSH host keys are not verified** (paramiko `AutoAddPolicy` in the web terminal, netmiko defaults elsewhere): fine on an isolated provisioning segment, must be trust-on-first-use before production use. Record each device's key after pre-config (pre-config generates the RSA key on factory boxes), store it with the device, reject a changed key with a clear problem; apply to netmiko and the terminal alike
+- [x] UI works offline after a clone: fonts (OFL) and xterm.js + fit (MIT) vendored in `pandora/web/vendor/` by `scripts/vendor_web.py`; verified 0 external requests in the browser
+- [x] Laptop with internet + switch on the dedicated NIC: preflight and startup probe for another DHCP server on the segment (scapy DISCOVER; verified against a Cisco `ip dhcp pool` in the ztp lab) and refuse to serve DHCP if one answers; preflight fails if another NIC overlaps the provisioning subnet
+- [x] Security review round 2: a selected box with no known address can't be claimed by serial; the allocated mgmt IP counts as the box's address only once its config was sent (state provisioning); `/ztp/done` must name the serial of the box it comes from; a boot file is served only for the device's own delivery path
 - [x] Security review 2026-11-25 fixed: boot configs (PnP `/cfg`, ZTP `/ztp/cfg`, AutoInstall TFTP) are served only to the device's own address; PnP/ZTP reports and a selected box's serial are only accepted from its own address or its allocated mgmt IP (`net/pnp.py _own`); the UI/API refuses cross-site requests marked by `Sec-Fetch-Site`
 - [ ] ZTP (Guest Shell Python) on a real image: IOL has no Guest Shell; needs Cat8000v or Cat9000v (vrnetlab, KVM is available in WSL). Ask the user before downloading images.
 - [ ] SNMP informs from real devices: the lab reaches devices through containerlab's `clab-mgmt` VRF, so informs need `snmp-server host ... vrf clab-mgmt` (lab only) or a data-plane path to PandoraBox
 - [ ] Optional: after PnP/AutoInstall succeed, auto-run an SSH probe + merge to add capability-dependent lines (`traps config`, vty 5-15)
 - [ ] CPU OID returns nothing on IOL (`cpu ?%`); check on a real Catalyst
-- [ ] Known limits: no NX-OS/XR, no PnP image upgrade, DHCP has no relay (giaddr) support, UI loads fonts/xterm from CDN
+- [ ] Known limits: no NX-OS/XR, no PnP image upgrade, DHCP has no relay (giaddr) support
 - [ ] **Real hardware run**: follow [docs/real-lab.md](docs/real-lab.md) (laptop prep, `python -m pandora --preflight` until Ready, factory reset, discovery, each path, day-2, report table). Ready to start; on this laptop preflight currently fails only on things the user sets up: the 3 secrets, the dedicated NIC "Ethernet 2" with 10.99.0.1, and the firewall rules
 
 ## Containerlab labs (WSL Debian, user `lucky`)
