@@ -1,0 +1,19 @@
+# One more switch for a running medium lab, without redeploying it (the medium lab's devices and PandoraBox's
+# database stay as they are). It sits on the same management network as the medium lab, like a switch someone
+# configured by hand and plugged in elsewhere: SSH on its management address with the IOL default login
+# (admin / admin), no PandoraBox config, no SNMP user, no cable to the medium lab's switches.
+#   CLAB_LABDIR_BASE=$HOME/clab containerlab deploy -t lab/extra.clab.yml --reconfigure
+#   CLAB_LABDIR_BASE=$HOME/clab containerlab destroy -t lab/extra.clab.yml --cleanup
+name: pandora-extra
+
+mgmt:
+  network: pandora-medium-mgmt   # the medium lab's network: PandoraBox (172.30.32.2) reaches it directly
+  ipv4-subnet: 172.30.32.0/24
+
+topology:
+  nodes:
+    new-sw:
+      kind: cisco_iol
+      type: L2
+      image: vrnetlab/cisco_iol:L2-17.18.02
+      mgmt-ipv4: 172.30.32.41
