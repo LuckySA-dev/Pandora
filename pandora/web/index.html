@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PandoraBox</title>
+<meta name="color-scheme" content="light dark">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;600;700&family=Atkinson+Hyperlegible+Mono:wght@400;500&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<link rel="stylesheet" href="/web/css/app.css">
+<script>try { const t = localStorage.getItem("pandora.theme"); if (t) document.documentElement.dataset.theme = t; } catch {}</script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js" defer></script>
+<script type="module" src="/web/js/app.js"></script>
+</head>
+<body>
+<div class="shell">
+  <nav class="rail" aria-label="Main">
+    <div class="mark"><span aria-hidden="true"></span>Pandora</div>
+    <a href="#/" data-nav="dashboard"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="2" y="4" width="16" height="5" rx="1"/><rect x="2" y="11" width="16" height="5" rx="1"/><circle cx="5" cy="6.5" r=".9" fill="currentColor"/><circle cx="5" cy="13.5" r=".9" fill="currentColor"/></svg>Bench</a>
+    <a href="#/devices" data-nav="devices"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h9"/></svg>Devices</a>
+    <a href="#/topology" data-nav="topology"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="10" cy="4" r="2"/><circle cx="4" cy="15" r="2"/><circle cx="16" cy="15" r="2"/><path d="M9 6l-4 7M11 6l4 7M6 15h8"/></svg>Topology</a>
+    <a href="#/problems" data-nav="problems"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M10 3l8 14H2z"/><path d="M10 8v4M10 14.5v.5"/></svg>Problems<span class="badge" id="badge-problems" hidden></span></a>
+    <a href="#/agent" data-nav="agent"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="14" height="10" rx="2"/><path d="M7 17h6M7 8l2 2-2 2M11 12h3"/></svg>Agent<span class="badge" id="badge-agent" hidden></span></a>
+    <div class="spacer"></div>
+    <a href="#" id="theme-toggle" title="Switch light or dark"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="M10 4a6 6 0 0 0 0 12z" fill="currentColor"/></svg>Theme</a>
+  </nav>
+  <div class="main">
+    <header class="topbar">
+      <form class="search" id="search" role="search">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="9" cy="9" r="5.5"/><path d="M13.5 13.5L17 17"/></svg>
+        <input id="search-q" type="search" placeholder="Find a device by name, serial, IP or MAC" aria-label="Find a device">
+        <kbd>/</kbd>
+      </form>
+      <span class="live" id="live"><span class="led"></span>Connecting</span>
+    </header>
+    <main class="content" id="view" tabindex="-1"></main>
+  </div>
+</div>
+</body>
+</html>

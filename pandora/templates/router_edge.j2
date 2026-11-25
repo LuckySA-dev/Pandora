@@ -1,0 +1,13 @@
+! ===== role: edge router =====
+{% if wan_port %}
+interface {{ wan_port }}
+ description WAN
+ ip address {{ wan_ip or 'dhcp' }}
+ no shutdown
+{% endif %}
+{% if lan_port %}
+interface {{ lan_port }}
+ description LAN
+ ip address {{ lan_ip }}
+ no shutdown
+{% endif %}

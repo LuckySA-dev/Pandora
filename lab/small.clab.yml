@@ -1,0 +1,45 @@
+# Small campus for PandoraBox day-2 tests: one IOL-XE router as core, two IOL-XE L2 access switches,
+# and PandoraBox itself as a container on the same management network.
+#   wsl -d Debian -- sleep infinity      (keep open: WSL stops an idle distro ~15 s after the last
+#                                         Windows-side command, and every container dies with it)
+#   CLAB_LABDIR_BASE=$HOME/clab containerlab deploy -t lab/small.clab.yml --reconfigure
+#   docker exec -it clab-pandora-small-pandora python scripts/clab_check.py
+#   CLAB_LABDIR_BASE=$HOME/clab containerlab destroy -t lab/small.clab.yml --cleanup
+# No sudo: containerlab is setuid and the user is in clab_admins. CLAB_LABDIR_BASE keeps the lab folder
+# (IOL NVRAM files) on WSL's Linux disk instead of /mnt/c.
+name: pandora-small
+
+mgmt:
+  network: pandora-mgmt
+  ipv4-subnet: 172.30.30.0/24
+
+topology:
+  kinds:
+    cisco_iol:
+      image: vrnetlab/cisco_iol:17.18.02
+  nodes:
+    pandora:
+      kind: linux
+      image: pandorabox-dev:latest
+      mgmt-ipv4: 172.30.30.2
+      binds:
+        - /mnt/c/Users/User/Desktop/Coding/Pandora:/app
+      ports:
+        - 8099:8099
+    core:
+      kind: cisco_iol
+      mgmt-ipv4: 172.30.30.11
+    acc1:
+      kind: cisco_iol
+      type: L2
+      image: vrnetlab/cisco_iol:L2-17.18.02
+      mgmt-ipv4: 172.30.30.12
+    acc2:
+      kind: cisco_iol
+      type: L2
+      image: vrnetlab/cisco_iol:L2-17.18.02
+      mgmt-ipv4: 172.30.30.13
+  links:
+    - endpoints: ["core:Ethernet0/1", "acc1:Ethernet0/1"]
+    - endpoints: ["core:Ethernet0/2", "acc2:Ethernet0/1"]
+    - endpoints: ["acc1:Ethernet0/2", "acc2:Ethernet0/2"]

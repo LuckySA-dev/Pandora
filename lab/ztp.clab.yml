@@ -1,0 +1,55 @@
+# Zero-touch lab: factory-blank IOL boxes on a provisioning segment, PandoraBox serving DHCP/TFTP/PnP on it.
+#   wsl -d Debian -- sleep infinity      (keep open, see small.clab.yml)
+#   CLAB_LABDIR_BASE=$HOME/clab containerlab deploy -t lab/ztp.clab.yml --reconfigure
+#   docker exec -it clab-pandora-ztp-pandora python scripts/ztp_check.py
+# blank1 + blank3 = router image, blank2 = L2 image. They are plain linux nodes running the IOL image with
+# lab/ztp/blank.sh, so containerlab writes no config: they boot like a box out of the carton.
+# Their consoles: socket://127.0.0.1:5021, :5022, :5023 inside the PandoraBox container. A blank box waits
+# (powered off) until ztp_check starts that console relay, i.e. after DHCP/TFTP/PnP are listening.
+name: pandora-ztp
+
+mgmt:
+  network: pandora-ztp-mgmt
+  ipv4-subnet: 172.30.31.0/24
+
+topology:
+  nodes:
+    pandora:
+      kind: linux
+      image: pandorabox-dev:latest
+      mgmt-ipv4: 172.30.31.2
+      binds:
+        - /mnt/c/Users/User/Desktop/Coding/Pandora:/app
+      exec:
+        - ip addr add 10.99.0.1/24 dev eth1
+    sw:   # the access switch the blank boxes are cabled to (configured by containerlab, VLAN 1 on all ports)
+      kind: cisco_iol
+      type: L2
+      image: vrnetlab/cisco_iol:L2-17.18.02
+      mgmt-ipv4: 172.30.31.10
+    blank1:
+      kind: linux
+      image: vrnetlab/cisco_iol:17.18.02
+      mgmt-ipv4: 172.30.31.21
+      env: {IOL_PID: "21"}
+      binds: [/mnt/c/Users/User/Desktop/Coding/Pandora/lab/ztp/blank.sh:/blank.sh:ro]
+      entrypoint: /bin/bash /blank.sh
+    blank2:
+      kind: linux
+      image: vrnetlab/cisco_iol:L2-17.18.02
+      mgmt-ipv4: 172.30.31.22
+      env: {IOL_PID: "22"}
+      binds: [/mnt/c/Users/User/Desktop/Coding/Pandora/lab/ztp/blank.sh:/blank.sh:ro]
+      entrypoint: /bin/bash /blank.sh
+    blank3:
+      kind: linux
+      image: vrnetlab/cisco_iol:17.18.02
+      mgmt-ipv4: 172.30.31.23
+      env: {IOL_PID: "23"}
+      binds: [/mnt/c/Users/User/Desktop/Coding/Pandora/lab/ztp/blank.sh:/blank.sh:ro]
+      entrypoint: /bin/bash /blank.sh
+  links:
+    - endpoints: ["pandora:eth1", "sw:Ethernet0/1"]
+    - endpoints: ["blank1:eth1", "sw:Ethernet0/2"]
+    - endpoints: ["blank2:eth1", "sw:Ethernet0/3"]
+    - endpoints: ["blank3:eth1", "sw:Ethernet1/0"]

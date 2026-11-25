@@ -1,0 +1,196 @@
+"""Features adapted from Oxidized / Golden Config / Zabbix / NetBox: backup, compliance, alerts, API."""
+import tempfile
+from pathlib import Path
+
+from conftest import add
+
+from pandora import alerts, alloc, backup, compliance, devicetypes, platforms
+
+
+def _provisioned(ctx, n=1, pid="C9300-24P"):
+    d = add(ctx, n, pid=pid, ip=f"10.99.0.{50 + n}")
+    ctx.db.set_state(d["id"], "provisioned")
+    return ctx.db.device(d["id"])
+
+
+def _running_from(intended: str) -> str:
+    """What a switch shows after applying `intended`: ranges expanded, secret hashed, snmp user/crypto hidden."""
+    out, members = [], None
+    for line in intended.splitlines():
+        if not line.strip() or line.startswith(("!", "crypto key", "snmp-server user")):
+            continue
+        if line.startswith("interface range "):
+            members = alloc.expand_range(line[len("interface range "):])
+            out.append(("RANGE", members, []))
+            continue
+        if line.startswith(" ") and members is not None:
+            out[-1][2].append(line)
+            continue
+        members = None
+        out.append(line.replace("secret Adm1nPass!", "secret 9 $9$hash"))
+    text = []
+    for item in out:
+        if isinstance(item, tuple):
+            for m in item[1]:
+                text += [f"interface {m}"] + item[2]
+        else:
+            text.append(item)
+    return "\n".join(text) + "\n"
+
+
+def test_platform_clean_strips_volatile_lines():
+    raw = ("Building configuration...\r\n\r\nCurrent configuration : 1234 bytes\r\n"
+           "! Last configuration change at 10:00\r\nhostname a\r\n")
+    assert platforms.clean("iosxe", raw) == "hostname a\n"
+    assert platforms.get(None)["netmiko"] == "cisco_ios" and platforms.get("iosxe")["netmiko"] == "cisco_xe"
+
+
+def test_backup_stores_only_changes_and_diffs(ctx):
+    d = _provisioned(ctx)
+    cfgs = iter(["hostname a\nusername pandora privilege 15 secret 9 $9$abc\n",
+                 "hostname a\nusername pandora privilege 15 secret 9 $9$abc\n",
+                 "Current configuration : 99 bytes\nhostname b\n"])
+    ctx.ssh_command = lambda dev, cmd: next(cfgs)
+    first, same, changed = (backup.fetch(ctx, d["id"]) for _ in range(3))
+    assert first["changed"] and not same["changed"] and changed["changed"]
+    hist = backup.history(ctx.db, d["id"])
+    assert len(hist) == 2 and (hist[0]["added"], hist[0]["removed"]) == (1, 2)
+    assert "$9$abc" not in backup.get(ctx.db, first["id"])["text"]  # stored masked
+    diff = backup.diff(ctx.db, first["id"], changed["id"])
+    assert "-hostname a" in diff and "+hostname b" in diff
+
+
+def test_compliance_compliant_then_drift_and_safe_remediation(ctx):
+    d = _provisioned(ctx)
+    ctx.db.set_vars(d["id"], {"access_ports": [{"ports": "Gi1/0/1 - 2", "vlan": 10}]})
+    intended, _, a = ctx.render(d["id"])
+    running = _running_from(intended)
+    ok = compliance.compare(intended, running, a["reserved_ports"], 99)
+    assert ok["compliant"], [f for f in ok["features"] if not f["compliant"]]
+    # drift: someone shut a mgmt port and removed the trap host
+    drifted = running.replace(" description PANDORA-MGMT reserved\n",
+                              " description PANDORA-MGMT reserved\n shutdown\n", 1)
+    drifted = "\n".join(l for l in drifted.splitlines() if not l.startswith("snmp-server host"))
+    bad = compliance.compare(intended, drifted, a["reserved_ports"], 99)
+    assert {f["name"] for f in bad["features"] if not f["compliant"]} == {"mgmt-ports", "snmp"}
+    rem = bad["remediation"]
+    assert " no shutdown" in rem and any(l.startswith("snmp-server host") for l in rem)
+    # a removed user is reported, but never "fixed" by pushing a user line without its secret
+    no_user = "\n".join(l for l in running.splitlines() if not l.startswith("username"))
+    r2 = compliance.compare(intended, no_user, a["reserved_ports"], 99)
+    assert not r2["compliant"] and not any(l.startswith("username") for l in r2["remediation"])
+
+
+def test_compliance_remediation_order_for_changed_vlan():
+    res = compliance.compare("interface GigabitEthernet1/0/24\n switchport access vlan 99\n",
+                             "interface GigabitEthernet1/0/24\n switchport access vlan 10\n", ["Gi1/0/24"], 99)
+    assert res["remediation"] == ["interface GigabitEthernet1/0/24", " no switchport access vlan 10",
+                                  " switchport access vlan 99"]
+
+
+def test_alerts_triggers_and_recovery(ctx):
+    d = _provisioned(ctx)
+    alloc.allocate(ctx.db, ctx.cfg, d["id"])  # reserved Gi1/0/23-24
+    alerts.on_sample(ctx, d, {"Gi1/0/5:oper": "up", "Gi1/0/24:oper": "up", "cpu5min": "10"}, None)
+    assert alerts.open_problems(ctx.db) == []
+    alerts.on_sample(ctx, d, {"Gi1/0/5:oper": "down", "Gi1/0/24:oper": "down", "cpu5min": "95"},
+                     {"Gi1/0/5:oper": "up", "Gi1/0/24:oper": "up"})
+    sev = {p["key"]: p["severity"] for p in alerts.open_problems(ctx.db)}
+    assert sev == {"if:GigabitEthernet1/0/5": "warning", "if:GigabitEthernet1/0/24": "high", "cpu": "average"}
+    assert alerts.worst(ctx.db)[d["id"]] == "high"
+    alerts.on_sample(ctx, d, {"Gi1/0/5:oper": "up", "Gi1/0/24:oper": "up", "cpu5min": "5"}, None)
+    assert alerts.open_problems(ctx.db) == []  # recovered on their own
+    for _ in range(alerts.UNREACHABLE_AFTER):
+        alerts.on_poll_failed(ctx, d)
+    assert [p["key"] for p in alerts.open_problems(ctx.db)] == ["unreachable"]
+    alerts.ack(ctx, alerts.open_problems(ctx.db)[0]["id"], "on it")
+    assert alerts.open_problems(ctx.db)[0]["note"] == "on it"
+    ctx.db.set_state(d["id"], "failed", "boom")
+    alerts.on_device(ctx, ctx.db.device(d["id"]))
+    assert any(p["key"] == "provision" and p["severity"] == "high" for p in alerts.open_problems(ctx.db))
+
+
+def test_devicetype_library_fallback():
+    folder = Path(tempfile.mkdtemp(prefix="pandora-dt-"))
+    (folder / "x.yaml").write_text(
+        "manufacturer: Cisco\nmodel: Catalyst 9500-16X\npart_number: C9500-16X\ninterfaces:\n"
+        "  - name: GigabitEthernet0/0\n    type: 1000base-t\n    mgmt_only: true\n"
+        + "".join(f"  - name: TenGigabitEthernet1/0/{i}\n    type: 10gbase-x-sfpp\n" for i in range(1, 17)))
+    devicetypes.load.cache_clear()
+    try:
+        assert devicetypes.last_ports("C9500-16X", 2, str(folder)) == ["TenGigabitEthernet1/0/15",
+                                                                       "TenGigabitEthernet1/0/16"]
+        assert devicetypes.last_ports("NOPE", 2, str(folder)) is None
+    finally:
+        devicetypes.load.cache_clear()
+
+
+def test_new_api_endpoints(ctx):
+    from fastapi.testclient import TestClient
+
+    from pandora.app import create_app
+    c = TestClient(create_app(ctx, background=False))
+    d = _provisioned(ctx)
+    other = add(ctx, 2)
+    assert [x["id"] for x in c.get("/api/devices", params={"state": "provisioned"}).json()] == [d["id"]]
+    assert [x["id"] for x in c.get("/api/devices", params={"q": "00:00:00:00:00:02"}).json()] == [other["id"]]
+    csv = c.get("/api/devices.csv").text.splitlines()
+    assert csv[0].startswith("id,state,hostname") and len(csv) == 3
+    alerts.raise_(ctx, d["id"], "cpu", "average", "CPU 95%")
+    dash = c.get("/api/dashboard").json()
+    assert dash["problems"]["average"] == 1 and dash["states"]["provisioned"] == 1
+    pid = c.get("/api/problems").json()[0]["id"]
+    assert c.post(f"/api/problems/{pid}/ack", json={"note": "x"}).status_code == 200
+    det = c.get(f"/api/devices/{d['id']}").json()
+    assert det["device"]["id"] == d["id"] and det["problems"][0]["severity"] == "average"
+    assert c.get("/api/devices/999").status_code == 404
+    ctx.ssh_command = lambda dev, cmd: "hostname x\n"
+    assert c.post(f"/api/devices/{d['id']}/backups").json()["changed"] is True
+    assert c.post(f"/api/devices/{other['id']}/backups").status_code == 400  # no IP yet
+    res = c.post(f"/api/devices/{d['id']}/compliance").json()
+    assert res["compliant"] is False and c.get(f"/api/devices/{d['id']}/compliance").json()["backup_id"]
+    assert c.post(f"/api/devices/{d['id']}/remediate", json={}).status_code == 400  # needs confirm
+    assert any(p["key"] == "drift" for p in c.get("/api/problems").json())
+
+
+def test_image_caps_from_real_iol_help_shape_the_config(ctx):
+    from pandora.deliver import parse_caps
+    vty = "line vty 0 ?\n  <1-4>  Last Line number\n  <cr>   <cr>\n"
+    l2_group = "  auth    group using the authNoPriv Security Level\n  noauth  group using the noAuthNoPriv Security Level\n"
+    rtr_traps = "  bfd                          Allow SNMP BFD traps\n  cef                          Enable SNMP CEF traps\n"
+    caps = parse_caps(vty, l2_group, rtr_traps)
+    assert caps == {"cap_vty_last": 4, "cap_snmp_priv": False, "cap_traps_config": False}
+    assert parse_caps("  <1-1869>  Last Line number", "", "") == {"cap_vty_last": 15}  # unread help keeps defaults
+    d = add(ctx, 90)
+    ctx.db.set_vars(d["id"], caps)
+    text, problems, _ = ctx.render(d["id"])
+    assert any("no SNMPv3 priv" in p for p in problems)  # never downgrade without the operator's say-so
+    ctx.cfg["snmp_allow_auth_nopriv"] = True
+    text, problems, _ = ctx.render(d["id"])
+    assert not problems and "line vty 0 4\n" in text and "traps config" not in text
+    assert "snmp-server group PANDORA v3 auth\n" in text and "priv aes" not in text
+    assert "informs version 3 auth pandora" in text
+
+
+def test_console_probe_never_presses_a_key_on_a_box_that_is_zero_touching(monkeypatch):
+    from pandora import console
+
+    class FakePort:  # a factory IOS-XE box mid-AutoInstall, as seen on blank IOL in containerlab
+        def __init__(self, *a, **k):
+            self.out, self.written = (b"No startup-config, starting autoinstall/pnp/ztp...\r\n\r\n"
+                                      b"Autoinstall will terminate if any input is detected on console\r\n"), b""
+
+        def read(self, n):
+            chunk, self.out = self.out[:n], self.out[n:]
+            return chunk
+
+        def write(self, b):
+            self.written += b
+
+        def close(self):
+            FakePort.last = self
+
+    monkeypatch.setattr(console.serial, "serial_for_url", FakePort)
+    assert console.probe("socket://127.0.0.1:5022") == {"console_state": "ztp"}
+    assert FakePort.last.written == b""  # any input would have ended its AutoInstall
+    assert console.classify("Autoinstall will terminate if any input is detected\r\nSwitch>") == "user"

@@ -1,0 +1,25 @@
+# Copy to pandora.toml. Secrets are NOT stored here, set them as env vars:
+#   PANDORA_ADMIN_PASSWORD  local user pushed to every device
+#   PANDORA_SNMP_AUTH       SNMPv3 auth key (>= 8 chars)
+#   PANDORA_SNMP_PRIV       SNMPv3 priv key (>= 8 chars)
+#   ANTHROPIC_API_KEY       only if llm.provider = "claude"
+
+iface = "Ethernet 2"          # dedicated NIC cabled to the Cisco gear (static IP, no gateway)
+server_ip = "10.99.0.1"       # static IP of that NIC
+netmask = "255.255.255.0"
+dhcp_range = "10.99.0.100-10.99.0.199"   # bootstrap leases for factory devices
+mgmt_range = "10.99.0.10-10.99.0.99"     # permanent mgmt IPs, one per device, never reused
+mgmt_gateway = ""             # optional ip default-gateway for devices
+mgmt_vlan = 99
+reserved_port_count = 2       # ports kept for the mgmt VLAN on every switch (1 or 2)
+site = "lab"
+hostname_pattern = "{site}-{role}-{nn:02d}"
+domain = "pandora.local"
+admin_user = "pandora"
+snmp_user = "pandora"
+http_port = 80                # PnP agents always call port 80
+
+[llm]
+provider = "claude"           # "claude" or "ollama"
+model = "claude-opus-5-5"   # for ollama e.g. "qwen2.5:14b"
+ollama_url = "http://127.0.0.1:11434"

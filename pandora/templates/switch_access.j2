@@ -1,0 +1,18 @@
+! ===== role: access switch =====
+{% for v in vlans or [] %}
+vlan {{ v.id }}
+ name {{ v.name }}
+{% endfor %}
+{% for a in access_ports or [] %}
+interface range {{ a.ports }}
+ switchport mode access
+ switchport access vlan {{ a.vlan }}
+ spanning-tree portfast
+ no shutdown
+{% endfor %}
+{% if uplink %}
+interface range {{ uplink }}
+ description UPLINK
+ switchport mode trunk
+ no shutdown
+{% endif %}
