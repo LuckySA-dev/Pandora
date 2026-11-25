@@ -136,8 +136,14 @@ class Ctx:
                                                "secret": self.cfg["admin_password"]}
 
     # ---- device-pull paths (DHCP / PnP / ZTP / TFTP) -----------------------
-    def boot_config(self, dev, method) -> str | None:
+    def boot_config(self, dev, method, client_ip=None) -> str | None:
         if not dev or dev["state"] not in ("queued", "provisioning"):
+            return None
+        # The file holds the admin password and SNMP keys: only the box itself may fetch it, from the address
+        # PandoraBox gave it (DHCP lease) or saw it call from (PnP). A neighbour that knows the serial gets nothing.
+        if client_ip and dev["ip"] != client_ip:
+            log.warning("boot config for device %s asked by %s, not its address %s: refused", dev["id"], client_ip,
+                        dev["ip"])
             return None
         text, problems, _ = self.render(dev["id"], factory=True, autosave=method == "autoinstall")
         return None if problems else text
@@ -168,7 +174,7 @@ class Ctx:
             raw = filename[8:].split(".")[0]
             dev = self.db.find(mac=":".join(raw[i:i + 2] for i in range(0, 12, 2)))
         dev = dev or self.db.find(ip=client_ip)
-        text = self.boot_config(dev, "autoinstall")
+        text = self.boot_config(dev, "autoinstall", client_ip)
         if text and dev["state"] == "queued":
             self.db.set_state(dev["id"], "provisioning", "AutoInstall: config downloaded")
             self.emit("device", self.db.device(dev["id"]))

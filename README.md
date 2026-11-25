@@ -16,11 +16,17 @@ Zero-touch pre-config for Cisco IOS / IOS-XE, run from one Windows laptop.
    $env:PANDORA_SNMP_PRIV = "..."        # SNMPv3 priv, >= 8 chars
    $env:ANTHROPIC_API_KEY = "..."        # only for the agent with provider = "claude"
    ```
-5. Run it from an **Administrator** PowerShell. If binding fails, it prints the `netsh` firewall rules to add.
+5. Check the laptop before cabling anything. It verifies secrets, the NIC, the ports, the IP ranges, Npcap, the firewall and consoles, and says what to fix:
+   ```powershell
+   python -m pandora --preflight
+   ```
+6. Run it from an **Administrator** PowerShell. If binding fails, it prints the `netsh` firewall rules to add.
    ```powershell
    python -m pandora
    ```
    Open http://127.0.0.1 (the UI answers only to this laptop). `--no-dhcp` runs only the console, SNMP, and SSH features.
+
+For a first run on real switches, follow [docs/real-lab.md](docs/real-lab.md) step by step.
 
 **Cabling:** plug the laptop into one of the **reserved mgmt ports** (by default the last two ports of each switch). After pre-config those ports move to the mgmt VLAN (99) in the same subnet, so the laptop keeps reaching the device.
 

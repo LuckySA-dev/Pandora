@@ -19,7 +19,7 @@ Stack: Python 3.12, FastAPI, SQLite, netmiko/paramiko, pysnmp 7, tftpy, scapy, J
 - [ ] Ask before downloads/installs beyond the project's dependencies.
 - [ ] GPL projects (Zabbix, LibreNMS) are design reference only, no code. Apache/MIT code we adapted is credited in `NOTICE` (Oxidized, hier_config, WebSSH, NetBox).
 - [ ] Reply to the user in Thai; code, comments and docs in English.
-- [ ] The project is not a git repo: nothing is committed.
+- [x] Git repo on `main` (no remote). Commit when a piece of work is verified; `.gitattributes` keeps LF so the lab scripts run in Linux containers.
 
 ## Done
 
@@ -43,7 +43,8 @@ Real-device findings fixed (containerlab IOL, IOS-XE 17.18.2)
 - [x] Compliance: IOS hides `no shutdown` / `ip ssh version 2`, widens `traps snmp ...`, VTP server keeps VLANs in vlan.dat (read from `show vlan brief`)
 
 Verification (all green on 2026-11-25)
-- [x] `python -m pytest` → 39 passed
+- [x] `python -m pytest` → 40 passed
+- [x] `python -m pandora --preflight` checks a laptop for a real run (secrets, NIC, ports 67/69/162/80, ranges, Npcap, firewall, consoles, SNMP AES, agent)
 - [x] `python scripts/mvp_check.py` (simulated lab) → 23/23
 - [x] `scripts/clab_check.py` on `lab/small.clab.yml` (real IOL, day-2) → 9/9
 - [x] `scripts/ztp_check.py` on `lab/ztp.clab.yml` (factory-blank IOL: DHCP, PnP, AutoInstall, console) → 5/5
@@ -53,12 +54,14 @@ Verification (all green on 2026-11-25)
 ## Not done / next
 
 - [x] **Medium lab (12 IOL nodes) scale run**: 9/9, see the section at the end
+- [ ] **SSH host keys are not verified** (paramiko `AutoAddPolicy` in the web terminal, netmiko defaults elsewhere): fine on an isolated provisioning segment, must be trust-on-first-use before production use. Record each device's key after pre-config (pre-config generates the RSA key on factory boxes), store it with the device, reject a changed key with a clear problem; apply to netmiko and the terminal alike
+- [x] Security review 2026-11-25 fixed: boot configs (PnP `/cfg`, ZTP `/ztp/cfg`, AutoInstall TFTP) are served only to the device's own address; PnP/ZTP reports and a selected box's serial are only accepted from its own address or its allocated mgmt IP (`net/pnp.py _own`); the UI/API refuses cross-site requests marked by `Sec-Fetch-Site`
 - [ ] ZTP (Guest Shell Python) on a real image: IOL has no Guest Shell; needs Cat8000v or Cat9000v (vrnetlab, KVM is available in WSL). Ask the user before downloading images.
 - [ ] SNMP informs from real devices: the lab reaches devices through containerlab's `clab-mgmt` VRF, so informs need `snmp-server host ... vrf clab-mgmt` (lab only) or a data-plane path to PandoraBox
 - [ ] Optional: after PnP/AutoInstall succeed, auto-run an SSH probe + merge to add capability-dependent lines (`traps config`, vty 5-15)
 - [ ] CPU OID returns nothing on IOL (`cpu ?%`); check on a real Catalyst
 - [ ] Known limits: no NX-OS/XR, no PnP image upgrade, DHCP has no relay (giaddr) support, UI loads fonts/xterm from CDN
-- [ ] Real hardware run (Cat9k/2960 on the laptop NIC) per the plan's hardware checklist
+- [ ] **Real hardware run**: follow [docs/real-lab.md](docs/real-lab.md) (laptop prep, `python -m pandora --preflight` until Ready, factory reset, discovery, each path, day-2, report table). Ready to start; on this laptop preflight currently fails only on things the user sets up: the 3 secrets, the dedicated NIC "Ethernet 2" with 10.99.0.1, and the firewall rules
 
 ## Containerlab labs (WSL Debian, user `lucky`)
 

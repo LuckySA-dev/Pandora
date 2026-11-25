@@ -17,7 +17,8 @@ EXTRA_UI_NETS: list = []  # cfg "ui_allow": e.g. the Docker gateway when Pandora
 
 def ui_ok(client_host, headers) -> bool:
     """Operator UI/API: client on this laptop, AND a localhost Host header (blocks DNS rebinding),
-    AND a localhost Origin when a browser sends one (blocks cross-site requests / WebSocket hijacking)."""
+    AND no cross-site Sec-Fetch-Site, AND a localhost Origin when a browser sends one (blocks cross-site
+    requests / WebSocket hijacking)."""
     import ipaddress
     if client_host not in LOCAL:
         try:
@@ -26,6 +27,10 @@ def ui_ok(client_host, headers) -> bool:
         except ValueError:
             return False
     if urlsplit("//" + headers.get("host", "")).hostname not in UI_HOSTS:
+        return False
+    # A cross-site GET (e.g. <img src=".../api/topology?fresh=1">, which logs in to every device) carries no
+    # Origin, but browsers mark it: Sec-Fetch-Site cross-site/same-site. Typed URLs are "none".
+    if headers.get("sec-fetch-site") not in (None, "same-origin", "none"):
         return False
     origin = headers.get("origin")
     return origin is None or urlsplit(origin).hostname in UI_HOSTS

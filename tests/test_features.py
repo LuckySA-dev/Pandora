@@ -194,3 +194,29 @@ def test_console_probe_never_presses_a_key_on_a_box_that_is_zero_touching(monkey
     assert console.probe("socket://127.0.0.1:5022") == {"console_state": "ztp"}
     assert FakePort.last.written == b""  # any input would have ended its AutoInstall
     assert console.classify("Autoinstall will terminate if any input is detected\r\nSwitch>") == "user"
+
+
+def test_preflight_catches_bad_ranges_and_missing_secrets():
+    from pandora import config, preflight
+    cfg = {**config.DEFAULTS, "admin_password": "Adm1nPass!", "snmp_auth": "", "snmp_priv": "short"}
+    assert [r[0] for r in preflight.check_secrets(cfg)] == ["ok", "fail", "fail"]
+    assert all(r[0] == "ok" for r in preflight.check_ranges(cfg))  # the shipped defaults are consistent
+    bad = preflight.check_ranges({**cfg, "dhcp_range": "10.99.0.90-10.99.0.120", "mgmt_range": "10.0.0.1-10.99.0.1"})
+    text = " ".join(r[2] for r in bad if r[0] == "fail")
+    assert "not inside" in text  # mgmt_range spans outside the NIC subnet
+    lap = preflight.check_ranges({**cfg, "dhcp_range": "10.99.0.90-10.99.0.120"})
+    assert any("overlap" in r[2] for r in lap)  # 90-99 is in both ranges
+    assert any("contains server_ip" in r[2] for r in preflight.check_ranges({**cfg, "dhcp_range": "10.99.0.1-10.99.0.5"}))
+
+
+def test_boot_config_only_for_the_box_itself_and_no_cross_site_api(ctx):
+    from pandora.api import ui_ok
+    d = ctx.db.upsert(mac="aa:00:00:00:00:77", pid="C9300-24P", ip="10.99.0.150", path="autoinstall")
+    assert ctx.queue([d["id"]])[0]["queued"]
+    d = ctx.db.device(d["id"])
+    assert "username pandora" in ctx.boot_config(d, "autoinstall", "10.99.0.150")
+    assert ctx.boot_config(d, "autoinstall", "10.99.0.151") is None  # a neighbour on the segment gets nothing
+    assert ctx.tftp_lookup("pandora-aa0000000077.cfg", "10.99.0.151") is None
+    local = {"host": "127.0.0.1"}
+    assert ui_ok("127.0.0.1", local) and ui_ok("127.0.0.1", {**local, "sec-fetch-site": "same-origin"})
+    assert not ui_ok("127.0.0.1", {**local, "sec-fetch-site": "cross-site"})  # <img src> from a web page

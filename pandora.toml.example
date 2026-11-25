@@ -19,6 +19,13 @@ admin_user = "pandora"
 snmp_user = "pandora"
 http_port = 80                # PnP agents always call port 80
 
+# Console servers (Opengear, Lantronix, ...) next to the USB/COM ports: pyserial URLs
+# console_urls = ["socket://192.0.2.10:2001", "rfc2217://192.0.2.10:2002"]
+
+# Some images have no SNMPv3 AES (IOL L2 in labs). Off = PandoraBox refuses to configure SNMP on them;
+# on = they get SNMPv3 authNoPriv instead (authenticated, not encrypted).
+# snmp_allow_auth_nopriv = false
+
 [llm]
 provider = "claude"           # "claude" or "ollama"
 model = "claude-opus-5-5"   # for ollama e.g. "qwen2.5:14b"

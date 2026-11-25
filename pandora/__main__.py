@@ -48,7 +48,11 @@ def main():
     ap.add_argument("--config", default="pandora.toml")
     ap.add_argument("--db", default="pandora.db")
     ap.add_argument("--no-dhcp", action="store_true", help="UI, console, SNMP and SSH only")
+    ap.add_argument("--preflight", action="store_true", help="check this machine for a real lab run, then exit")
     args = ap.parse_args()
+    if args.preflight:
+        from . import preflight
+        sys.exit(preflight.run(args.config))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     cfg = config.load(args.config)

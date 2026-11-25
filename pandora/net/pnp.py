@@ -5,12 +5,15 @@ PnP flow ported from the Open_PnP_Server idea (oliverl-21), reduced to what we n
   not queued      -> backoff 1 min        (device keeps polling until the user selects it)
   queued          -> config-upgrade (running) -> cli-exec "write memory" -> backoff terminate
 """
+import logging
 import xml.etree.ElementTree as ET
 
 from fastapi import APIRouter, Request, Response
 from jinja2 import Environment, FileSystemLoader
 
 from ..identify import parse_show_version, parse_udi
+
+log = logging.getLogger("pandora.pnp")
 
 XML = "application/xml"
 
@@ -60,6 +63,23 @@ def parse_msg(body: bytes) -> dict:
     return out
 
 
+def _own(db, dev, request, strict=False) -> bool:
+    """Is this caller the device itself? PnP/ZTP have no device authentication (no certificates), so the
+    address is the identity: once a box is selected (queued/provisioning) only its own addresses may speak for
+    its serial: the one it called from / leased, or the mgmt IP we gave it (after the config is applied the
+    PnP agent reports from there). strict: also before selection (reports about a box come from that box)."""
+    if not dev or not dev["ip"]:
+        return True
+    mine = {dev["ip"]} | {r["mgmt_ip"] for r in db.q("SELECT mgmt_ip FROM allocations WHERE device_id=?", dev["id"])}
+    if request.client.host in mine:
+        return True
+    if strict or dev["state"] in ("queued", "provisioning"):
+        log.warning("device %s (serial %s) is at %s, but %s spoke for it: ignored", dev["id"], dev["serial"],
+                    dev["ip"], request.client.host)
+        return False
+    return True
+
+
 def router(ctx) -> APIRouter:
     r = APIRouter()
     steps: dict[str, str] = {}  # serial -> last request we sent
@@ -77,6 +97,9 @@ def router(ctx) -> APIRouter:
         m = parse_msg(await request.body())
         udi, c = m["udi"], m["correlator"]
         facts = parse_udi(udi)
+        known = ctx.db.find(serial=facts["serial"]) if facts.get("serial") else None
+        if not _own(ctx.db, known, request):  # someone else claims a selected box's serial: no config, no row change
+            return xml(req_backoff(udi, c, 1))
         dev = ctx.db.upsert(**facts, ip=request.client.host, source="pnp", vendor_class="ciscopnp")
         if not dev["path"]:
             dev = ctx.db.upsert(serial=facts["serial"], path="pnp")
@@ -108,6 +131,8 @@ def router(ctx) -> APIRouter:
         facts = parse_udi(m["udi"])
         serial = facts["serial"]
         dev = ctx.db.find(serial=serial)
+        if not _own(ctx.db, dev, request, strict=True):
+            return xml(bye(m["udi"], m["correlator"]))
         step = steps.get(serial)
         if dev and step == "info":
             t = m["texts"]
@@ -130,9 +155,9 @@ def router(ctx) -> APIRouter:
         return xml(bye(m["udi"], m["correlator"]))
 
     @r.get("/cfg/{serial}")
-    def cfg_file(serial: str):
+    def cfg_file(request: Request, serial: str):
         dev = ctx.db.find(serial=serial)
-        text = ctx.boot_config(dev, dev["path"]) if dev else None
+        text = ctx.boot_config(dev, dev["path"], request.client.host) if dev else None
         return Response(text, media_type="text/plain") if text else Response(status_code=404)
 
     # ---- IOS-XE ZTP --------------------------------------------------------
@@ -145,7 +170,7 @@ def router(ctx) -> APIRouter:
         dev = ctx.db.find(serial=serial, ip=request.client.host)
         if dev and serial and not dev["serial"]:
             dev = ctx.db.upsert(ip=request.client.host, serial=serial)
-        text = ctx.boot_config(dev, "ztp") if dev else None
+        text = ctx.boot_config(dev, "ztp", request.client.host) if dev else None
         if not text:
             return Response(status_code=204)
         ctx.db.set_state(dev["id"], "provisioning", "ZTP: config downloaded")
@@ -156,7 +181,7 @@ def router(ctx) -> APIRouter:
     async def ztp_done(request: Request):
         data = await request.json()
         dev = ctx.db.find(serial=data.get("serial"), ip=request.client.host)
-        if dev:
+        if dev and _own(ctx.db, dev, request, strict=True):
             facts = parse_show_version(data.get("version", ""))  # may itself contain serial/hostname
             facts.pop("hostname", None)
             facts["serial"] = data.get("serial") or facts.get("serial")
