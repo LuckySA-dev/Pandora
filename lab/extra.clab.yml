@@ -1,19 +1,29 @@
-# One more switch for a running medium lab, without redeploying it (the medium lab's devices and PandoraBox's
-# database stay as they are). It sits on the same management network as the medium lab, like a switch someone
-# configured by hand and plugged in elsewhere: SSH on its management address with the IOL default login
-# (admin / admin), no PandoraBox config, no SNMP user, no cable to the medium lab's switches.
+# A factory-blank box for a running medium lab: nothing configured, just cabled to PandoraBox, so the user can
+# watch it arrive over DHCP + PnP in the UI (the medium lab's devices and PandoraBox's database stay as they are).
 #   CLAB_LABDIR_BASE=$HOME/clab containerlab deploy -t lab/extra.clab.yml --reconfigure
+#   docker exec -i clab-pandora-medium-pandora bash < lab/extra-pandora.sh   (bridge + console relay + app with DHCP)
 #   CLAB_LABDIR_BASE=$HOME/clab containerlab destroy -t lab/extra.clab.yml --cleanup
+# blank = IOL router image run by lab/ztp/blank.sh: no startup config, fresh NVRAM, e0/0 = eth1, asks for DHCP as
+# a PnP client (vendor class "ciscopnp"). It stays powered off until the console relay in PandoraBox answers on
+# port 7041 (the relay gives IOL the tty it needs; its console is socket://127.0.0.1:5041 inside PandoraBox).
+# Its cable goes to PandoraBox's eth2, which extra-pandora.sh bridges with eth1 (the cable to the medium lab's
+# d1): one provisioning segment, like a small switch in front of the laptop's LAN card.
 name: pandora-extra
 
 mgmt:
-  network: pandora-medium-mgmt   # the medium lab's network: PandoraBox (172.30.32.2) reaches it directly
+  network: pandora-medium-mgmt   # only carries the blank box's console link to PandoraBox (172.30.32.2)
   ipv4-subnet: 172.30.32.0/24
 
 topology:
   nodes:
-    new-sw:
-      kind: cisco_iol
-      type: L2
-      image: vrnetlab/cisco_iol:L2-17.18.02
+    clab-pandora-medium-pandora:   # the medium lab's PandoraBox, already running
+      kind: ext-container
+    blank:
+      kind: linux
+      image: vrnetlab/cisco_iol:17.18.02
       mgmt-ipv4: 172.30.32.41
+      env: {IOL_PID: "41", CONSOLE_RELAY: "172.30.32.2"}
+      binds: [/mnt/c/Users/User/Desktop/Coding/Pandora/lab/ztp/blank.sh:/blank.sh:ro]
+      entrypoint: /bin/bash /blank.sh
+  links:
+    - endpoints: ["clab-pandora-medium-pandora:eth2", "blank:eth1"]
