@@ -57,7 +57,8 @@ Verification (all green on 2026-11-25)
   - [x] compliance checks the design: `mgmt_config` stores what apply pushed per device (incl. per-port dot1q/native extras); `compliance.run` adds it to the intended config as feature **mgmt-design**, with IOS display rules (no allowed-VLAN list = all; split `allowed vlan` + `add` lines; `ip routing` hidden when default; design VLANs read from vlan.dat). Proven: medium lab 14/14 (twice), an edited domain SVI on a1 is flagged as mgmt-design and fixed by remediation. Security review: reserved ports/ops VLAN keep their strict feature even if a design line named them; only canonical `allowed vlan` forms are trusted; `ip routing` counts as held unless the box shows `no ip routing`
   - [ ] SSH through the domain address is slow to connect in the lab (the drift check took 35-90 s vs 15 s on the clab address): look at it on real gear before blaming the code
   - lesson: the lab's drift test must not cut its own management path (removing the member's gateway made it depend on ARP over VLAN 99 and failed once in three runs)
-  - [ ] not yet: removing the old VLAN 99 addresses is left to the operator; routers can't be backbones; an L2 path through a router is refused (cable members to switches)
+  - by design (user confirmed): **a backbone is always an L3 switch**, never a router; routers only join as members (dot1Q subinterface on their uplink). The wizard offers only switches, and `mgmt.plan` refuses a router backbone
+  - [ ] not yet: removing the old VLAN 99 addresses is left to the operator; an L2 path through a router is refused (cable members to switches); an L2-only switch picked as backbone is only caught when `ip routing` fails at apply
 
 ## Not done / next
 
