@@ -134,10 +134,11 @@ def _open(ctx, d, stack, cols, rows):
     if d["path"] == "console" and d["console_port"]:
         return _Console(stack.enter_context(console.session(d["console_port"])))
     import paramiko
+
+    from ..hostkeys import Pin
     c = ctx.creds_for(d)
     client = paramiko.SSHClient()
-    # ponytail: lab devices regenerate keys on every pre-config; pin host keys if this leaves the lab
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(Pin(ctx, d["id"]))  # same pinned key as netmiko; refused before the password
     client.connect(d["ip"], username=c["username"], password=c["password"], timeout=10,
                    look_for_keys=False, allow_agent=False)
     stack.callback(client.close)

@@ -45,6 +45,9 @@ export async function mount(root, params) {
     if (act === "check") { await attempt(() => api.post(`/api/devices/${id}/compliance`), "Compliance checked"); }
     if (act === "fix") await fix(st);
     if (act === "ack") await ack(+b.dataset.id);
+    if (act === "forgetkey" && confirm("Trust the key this device shows next time? Only do this if the box was replaced or reset; otherwise someone may be answering in its place.")) {
+      await attempt(() => api.post(`/api/devices/${id}/forget-host-key`), "Key forgotten: the next login pins the new one"); await loadDet(); draw();
+    }
     if (act === "login") { const { login } = await import("./devices.js"); await login(id); }
     if (act === "dry" || act === "send") await push(st, act === "dry", draw);
     if (act === "connect") openTerminal(st);
@@ -111,6 +114,7 @@ function overview(st) {
       <section class="panel"><h2>Open problems</h2>
         ${problems.length ? problems.map((p) => html`<div class="problem ${p.acked ? "acked" : ""}"><span class="sev sev-${p.severity}"></span>
             <div><div class="msg">${p.message}</div><div class="meta">${ago(p.opened)}${p.acked ? `, acknowledged${p.note ? `: ${p.note}` : ""}` : ""}</div></div>
+            ${p.key === "ssh-host-key" ? html`<button class="btn small" data-act="forgetkey">Trust new key</button>` : ""}
             ${p.acked ? html`<span class="sev-pill sev-${p.severity}">${p.severity}</span>` : html`<button class="btn small" data-act="ack" data-id="${p.id}">Acknowledge</button>`}</div>`)
           : html`<p class="muted">No open problems on this device.</p>`}
       </section>

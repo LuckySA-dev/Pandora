@@ -10,6 +10,9 @@ DEFAULTS = {
     "mgmt_gateway": "", "mgmt_vlan": 99, "reserved_port_count": 2, "site": "lab",
     "hostname_pattern": "{site}-{role}-{nn:02d}", "domain": "pandora.local",
     "admin_user": "pandora", "snmp_user": "pandora", "http_port": 80,
+    # PandoraBox's own SNMP engine ID (inform receiver). IOS sends SNMPv3 informs only to a remote engine it knows
+    # (`snmp-server engineID remote` + a remote user): seen on IOL 17.18, 0 informs sent without them.
+    "snmp_engine_id": "80001F8804" + b"pandora".hex(),
     "llm": {"provider": "claude", "model": "claude-opus-5-5", "ollama_url": "http://127.0.0.1:11434"},
 }
 

@@ -160,8 +160,7 @@ class Tools:
         return Path(self.ctx.template_dir) / name
 
     def _exec(self, d, cmd):
-        from ..deliver import connect
-        with connect(self.ctx.netmiko_params(d)) as conn:
+        with self.ctx.session(d) as conn:
             conn.enable()
             out = conn.send_command_timing(cmd)
             if out.rstrip().endswith("?"):  # "Destination filename [...]?" / "Proceed?"

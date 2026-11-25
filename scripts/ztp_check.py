@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 import uvicorn  # noqa: E402
 
-from pandora import access, config, console  # noqa: E402
+from pandora import access, compliance, config, console  # noqa: E402
 from pandora.app import create_app  # noqa: E402
 from pandora.db import DB  # noqa: E402
 from pandora.deliver import Ctx  # noqa: E402
@@ -129,6 +129,21 @@ def main():
     def _():
         d = until_done(ids["autoinstall"], 600, "AutoInstall provisioning")
         return f"{d['hostname']} @ {d['ip']}: {d['note']}"
+
+    @check("after PnP / AutoInstall: PandoraBox asks the image over SSH and merges the full config; compliant")
+    def _():
+        out = []
+        for k in ("pnp", "autoinstall"):
+            i = ids[k]
+            row = wait_for(lambda i=i: ctx.db.q("SELECT result FROM configs WHERE device_id=? AND method='ssh-complete'",
+                                            i), 180, 5, f"{k}: completion over SSH")[0]
+            assert row["result"].startswith("capability"), row["result"]
+            v = ctx.db.vars(i)
+            assert "cap_vty_last" in v and "cap_traps_config" in v, v
+            r = compliance.run(ctx, i)
+            assert r["compliant"], [f for f in r["features"] if not f["compliant"]]
+            out.append(f"{k}: vty 0-{v['cap_vty_last']}, traps config {v['cap_traps_config']}, compliant")
+        return "; ".join(out)
 
     @check("console: blank L2 switch (no DHCP from this image) pre-configured over socket:// console")
     def _():

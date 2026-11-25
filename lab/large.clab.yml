@@ -1,0 +1,128 @@
+# Large campus for the PandoraBox scale run: 40 IOL nodes (2 edge routers, 4 distribution L3 switches as
+# management backbones, 34 access L2 switches, access pairs cross-linked). Generated; same layout rules as
+# medium.clab.yml. Needs ~10 GB RAM in WSL: destroy the other labs first.
+#   CLAB_LABDIR_BASE=$HOME/clab containerlab deploy -t lab/large.clab.yml --reconfigure
+#   docker exec -it clab-pandora-large-pandora python scripts/clab_check.py lab/large.clab.yml
+name: pandora-large
+
+mgmt:
+  network: pandora-large-mgmt
+  ipv4-subnet: 172.30.33.0/24
+
+topology:
+  kinds:
+    cisco_iol:
+      image: vrnetlab/cisco_iol:17.18.02
+  defaults:
+    kind: cisco_iol
+  nodes:
+    pandora:
+      kind: linux
+      image: pandorabox-dev:latest
+      mgmt-ipv4: 172.30.33.2
+      binds:
+        - /mnt/c/Users/User/Desktop/Coding/Pandora:/app
+      exec:
+        - ip addr add 10.99.0.1/24 dev eth1
+    r1: {mgmt-ipv4: 172.30.33.11}
+    r2: {mgmt-ipv4: 172.30.33.12}
+    d1: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.21,
+         labels: {pandora.backbone: "10 10.10.0.0/24"}}
+    d2: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.22,
+         labels: {pandora.backbone: "20 10.20.0.0/24"}}
+    d3: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.23,
+         labels: {pandora.backbone: "30 10.30.0.0/24"}}
+    d4: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.24,
+         labels: {pandora.backbone: "40 10.40.0.0/24"}}
+    a1: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.101}
+    a2: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.102}
+    a3: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.103}
+    a4: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.104}
+    a5: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.105}
+    a6: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.106}
+    a7: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.107}
+    a8: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.108}
+    a9: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.109}
+    a10: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.110}
+    a11: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.111}
+    a12: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.112}
+    a13: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.113}
+    a14: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.114}
+    a15: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.115}
+    a16: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.116}
+    a17: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.117}
+    a18: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.118}
+    a19: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.119}
+    a20: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.120}
+    a21: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.121}
+    a22: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.122}
+    a23: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.123}
+    a24: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.124}
+    a25: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.125}
+    a26: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.126}
+    a27: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.127}
+    a28: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.128}
+    a29: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.129}
+    a30: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.130}
+    a31: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.131}
+    a32: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.132}
+    a33: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.133}
+    a34: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.33.134}
+  links:
+    - endpoints: ["pandora:eth1", "d1:Ethernet0/1"]
+    - endpoints: ["r1:Ethernet0/1", "r2:Ethernet0/1"]
+    - endpoints: ["r1:Ethernet0/2", "d1:Ethernet0/2"]
+    - endpoints: ["r2:Ethernet0/2", "d3:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet0/3", "d2:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet1/0", "d3:Ethernet0/2"]
+    - endpoints: ["d3:Ethernet0/3", "d4:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet1/1", "a1:Ethernet0/1"]
+    - endpoints: ["d2:Ethernet0/2", "a2:Ethernet0/1"]
+    - endpoints: ["d3:Ethernet1/0", "a3:Ethernet0/1"]
+    - endpoints: ["d4:Ethernet0/2", "a4:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet1/2", "a5:Ethernet0/1"]
+    - endpoints: ["d2:Ethernet0/3", "a6:Ethernet0/1"]
+    - endpoints: ["d3:Ethernet1/1", "a7:Ethernet0/1"]
+    - endpoints: ["d4:Ethernet0/3", "a8:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet2/0", "a9:Ethernet0/1"]
+    - endpoints: ["d2:Ethernet1/0", "a10:Ethernet0/1"]
+    - endpoints: ["d3:Ethernet1/2", "a11:Ethernet0/1"]
+    - endpoints: ["d4:Ethernet1/0", "a12:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet2/1", "a13:Ethernet0/1"]
+    - endpoints: ["d2:Ethernet1/1", "a14:Ethernet0/1"]
+    - endpoints: ["d3:Ethernet2/0", "a15:Ethernet0/1"]
+    - endpoints: ["d4:Ethernet1/1", "a16:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet2/2", "a17:Ethernet0/1"]
+    - endpoints: ["d2:Ethernet1/2", "a18:Ethernet0/1"]
+    - endpoints: ["d3:Ethernet2/1", "a19:Ethernet0/1"]
+    - endpoints: ["d4:Ethernet1/2", "a20:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet3/0", "a21:Ethernet0/1"]
+    - endpoints: ["d2:Ethernet2/0", "a22:Ethernet0/1"]
+    - endpoints: ["d3:Ethernet2/2", "a23:Ethernet0/1"]
+    - endpoints: ["d4:Ethernet2/0", "a24:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet3/1", "a25:Ethernet0/1"]
+    - endpoints: ["d2:Ethernet2/1", "a26:Ethernet0/1"]
+    - endpoints: ["d3:Ethernet3/0", "a27:Ethernet0/1"]
+    - endpoints: ["d4:Ethernet2/1", "a28:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet3/2", "a29:Ethernet0/1"]
+    - endpoints: ["d2:Ethernet2/2", "a30:Ethernet0/1"]
+    - endpoints: ["d3:Ethernet3/1", "a31:Ethernet0/1"]
+    - endpoints: ["d4:Ethernet2/2", "a32:Ethernet0/1"]
+    - endpoints: ["d1:Ethernet4/0", "a33:Ethernet0/1"]
+    - endpoints: ["d2:Ethernet3/0", "a34:Ethernet0/1"]
+    - endpoints: ["a1:Ethernet0/2", "a5:Ethernet0/2"]
+    - endpoints: ["a2:Ethernet0/2", "a6:Ethernet0/2"]
+    - endpoints: ["a3:Ethernet0/2", "a7:Ethernet0/2"]
+    - endpoints: ["a4:Ethernet0/2", "a8:Ethernet0/2"]
+    - endpoints: ["a9:Ethernet0/2", "a13:Ethernet0/2"]
+    - endpoints: ["a10:Ethernet0/2", "a14:Ethernet0/2"]
+    - endpoints: ["a11:Ethernet0/2", "a15:Ethernet0/2"]
+    - endpoints: ["a12:Ethernet0/2", "a16:Ethernet0/2"]
+    - endpoints: ["a17:Ethernet0/2", "a21:Ethernet0/2"]
+    - endpoints: ["a18:Ethernet0/2", "a22:Ethernet0/2"]
+    - endpoints: ["a19:Ethernet0/2", "a23:Ethernet0/2"]
+    - endpoints: ["a20:Ethernet0/2", "a24:Ethernet0/2"]
+    - endpoints: ["a25:Ethernet0/2", "a29:Ethernet0/2"]
+    - endpoints: ["a26:Ethernet0/2", "a30:Ethernet0/2"]
+    - endpoints: ["a27:Ethernet0/2", "a31:Ethernet0/2"]
+    - endpoints: ["a28:Ethernet0/2", "a32:Ethernet0/2"]

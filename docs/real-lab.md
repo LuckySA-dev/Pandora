@@ -122,6 +122,7 @@ ZTP is the one path not yet proven on a real image (IOL has no Guest Shell), so 
 - [ ] pull a cable: a linkDown inform arrives and a problem opens; plug it back: the problem closes
 - [ ] Topology shows the CDP links between the boxes, on the right ports
 - [ ] Terminal: prompt appears, typing has no lag, backspace and Ctrl+C work, `show run` scrolls
+- [ ] SSH host key: the device's key is pinned on the first login. Reset or swap a box without telling PandoraBox: the next login is refused with a high problem; **Trust new key** on the device page lets it in again
 - [ ] Agent (if an API key is set): "add VLAN 20 on <port> of <switch>": it looks, proposes, waits for Approve, applies, verifies
 
 ## 7. Management network (after pre-config)
@@ -134,6 +135,8 @@ Plug the PC (one LAN card is enough) into a reserved port of the switch you'll u
 - [ ] run the "On this PC" `New-NetRoute` lines in an Administrator PowerShell
 - [ ] Apply: every device shows its new SSH address in green
 - [ ] SSH (Terminal tab) to a device behind each backbone works; the data VLANs on the trunked links still pass traffic
+- [ ] pull a cable on a member: its linkDown inform arrives from the member's **new** address
+- [ ] **Remove old addresses**: members drop their VLAN 99 address and still answer on the new one; backbones keep theirs; compliance stays green
 
 ## 8. Report back
 

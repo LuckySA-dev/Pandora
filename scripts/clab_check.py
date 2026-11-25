@@ -60,7 +60,10 @@ def load_lab(path: Path) -> dict:
         slots = (max([index(p) for p in used[n]] + [1]) + 4) // 4
         ports = [f"Ethernet{i // 4}/{i % 4}" for i in range(1, slots * 4)]
         free[n] = pc.get(n) or next(p for p in ports if p not in used[n])
-    server = topo["topology"]["nodes"]["pandora"]["mgmt-ipv4"]
+    pandora = topo["topology"]["nodes"]["pandora"]
+    # Cabled to a node: its LAN card address (the `ip addr add` exec) is where informs go, as on a real laptop
+    eth1 = [x.split()[3].split("/")[0] for x in pandora.get("exec", []) if x.startswith("ip addr add")]
+    server = eth1[0] if pc and eth1 else pandora["mgmt-ipv4"]
     return {"name": topo["name"], "server": server, "ips": {n: v["mgmt-ipv4"] for n, v in nodes.items()},
             "router": {n for n, v in nodes.items() if v.get("type") != "L2"}, "links": links, "used": used,
             "mgmt_port": free, "pc": pc,
@@ -257,7 +260,7 @@ def mgmt_checks(ctx, lab, ids):
 
     @check("management design: plan has no problems (domains, trunks from CDP, router subinterfaces)")
     def _():
-        mgmt.ensure_caps(ctx, list(bb))  # what the API does before a plan
+        mgmt.ensure_caps(ctx, list(bb) + list(st["members"]))  # what the API does before a plan
         l3 = {b: ctx.db.vars(b).get("cap_ip_routing") for b in bb}
         assert all(v is True for v in l3.values()), f"backbones not recognised as L3 switches: {l3}"
         doms = [{"backbone": b, "vlan": int(v[0]), "subnet": v[1]} for b, v in bb.items()]
@@ -280,6 +283,23 @@ def mgmt_checks(ctx, lab, ids):
         moved = [d for d in ctx.db.devices() if d["ip"] and not d["ip"].startswith("172.30.")]
         assert len(moved) == len(nodes), [d["ip"] for d in ctx.db.devices()]
         return f"{len(res)} devices in {time.time() - t0:.0f}s, PandoraBox now reaches all of them through the domains"
+
+    @check("retire the old ops-VLAN addresses right after the design (symmetric paths): members drop them, SSH on the domain address stays, still compliant")
+    def _():
+        old = {n: ctx.db.q("SELECT mgmt_ip FROM allocations WHERE device_id=?", ids[n])[0]["mgmt_ip"] for n in nodes}
+        res = mgmt.retire(ctx)
+        bad = {r["hostname"]: r["error"] for r in res if not r["retired"]}
+        assert not bad, bad
+        members = [n for n in nodes if ids[n] not in bb]
+        assert len(res) == len(members), (len(res), len(members))
+        gone = [n for n in members if not access.ssh_open(old[n], timeout=2)]
+        assert len(gone) == len(members), f"old address still answers on {set(members) - set(gone)}"
+        assert all(access.ssh_open(old[n]) for n in nodes if ids[n] in bb), "a backbone lost its ops address"
+        res = dict(pmap(lambda n: (n, compliance.run(ctx, ids[n])), nodes))
+        drift = {n: [f["name"] for f in r["features"] if not f["compliant"]] for n, r in res.items() if not r["compliant"]}
+        drift = {n: f for n, f in drift.items() if not (n in lab["router"] and f == ["mgmt-ports"])}
+        assert not drift, drift
+        return f"{len(members)} members answer only on their domain address; backbones keep theirs; all compliant"
 
     @check("after the design: login works through the domains and every node is still compliant")
     def _():
@@ -310,6 +330,32 @@ def mgmt_checks(ctx, lab, ids):
         fix = compliance.remediate(ctx, ids[m])
         assert fix["result"]["compliant"], fix["result"]
         return f"{m}: drift seen as mgmt-design, plan {res['remediation']}, compliant again"
+
+    @check("SNMPv3 informs through the management domains: a port flap on every node reaches PandoraBox")
+    def _():
+        from pandora import snmp
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        got = []
+
+        async def start():
+            return snmp.start_receiver(ctx.cfg, lambda src, name, vbs: got.append((src, name)))
+        asyncio.run_coroutine_threadsafe(start(), loop).result(10)
+        # IOL has no spare cabled port on every node: a loopback that comes up and is shut sends linkUp/linkDown
+        # like a port, without touching the management path (removed again afterwards)
+        pmap(lambda n: ctx.ssh_config(ctx.db.device(ids[n]), ["interface Loopback99", " no shutdown"]), nodes)
+        time.sleep(3)
+        pmap(lambda n: ctx.ssh_config(ctx.db.device(ids[n]), ["interface Loopback99", " shutdown"]), nodes)
+        want = {ctx.db.device(ids[n])["ip"]: n for n in nodes}
+        end = time.time() + 60
+        while time.time() < end and not set(want) <= {s for s, k in got if k == "linkDown"}:
+            time.sleep(1)
+        pmap(lambda n: ctx.ssh_config(ctx.db.device(ids[n]), ["no interface Loopback99"]), nodes)
+        seen = {s for s, k in got if k == "linkDown"}
+        missing = {n: ip for ip, n in want.items() if ip not in seen}
+        assert not missing, f"no linkDown from {missing}; informs came from {sorted({s for s, _ in got})}"
+        return f"linkDown from all {len(want)} nodes, each from its own management address"
+
 
 
 def _try(fn):

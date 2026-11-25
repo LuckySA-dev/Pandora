@@ -13,10 +13,10 @@ def router(ctx) -> APIRouter:
     async def edges():  # always fresh: trunks are chosen from the cabling as it is now
         return (await topology.collect(ctx))["edges"]
 
-    def backbones(body):  # only real, known device ids: the probe logs in to them
+    def backbones(body):  # backbones + members, only real, known device ids: the probe logs in to them
         known = {d["id"] for d in ctx.db.devices()}
-        return [int(d["backbone"]) for d in body.get("domains", []) if str(d.get("backbone", "")).isdigit()
-                and int(d["backbone"]) in known]
+        ids = [d.get("backbone") for d in body.get("domains", [])] + list((body.get("members") or {}).keys())
+        return sorted({int(i) for i in ids if str(i).isdigit() and int(i) in known})
 
     @r.get("")
     def current():
@@ -45,5 +45,11 @@ def router(ctx) -> APIRouter:
         if not p["ok"]:
             return JSONResponse({"error": "; ".join(p["problems"]), "plan": p}, 400)
         return {"plan": p, "results": await asyncio.to_thread(mgmt.apply, ctx, p)}
+
+    @r.post("/retire")
+    async def retire(body: dict):
+        if body.get("confirm") is not True:  # removes addresses: an explicit yes, like remediate
+            return JSONResponse({"error": "confirm: true required"}, 400)
+        return {"results": await asyncio.to_thread(mgmt.retire, ctx)}
 
     return r

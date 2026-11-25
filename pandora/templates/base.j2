@@ -21,19 +21,28 @@ interface {{ p }}
  spanning-tree portfast
  no shutdown
 {% endfor %}
+{# ops_retired: the management design gave it an address in its domain and the old one was removed (mgmt.retire) #}
 interface Vlan{{ mgmt_vlan }}
  description PANDORA-MGMT
+{% if ops_retired %}
+ no ip address
+{% else %}
  ip address {{ mgmt_ip }} {{ netmask }}
+{% endif %}
  no shutdown
-{% if gateway %}
+{% if gateway and not ops_retired %}
 ip default-gateway {{ gateway }}
 {% endif %}
 {% else %}
 interface {{ reserved_ports[0] }}
  description PANDORA-MGMT reserved
+{% if ops_retired %}
+ no ip address
+{% else %}
  ip address {{ mgmt_ip }} {{ netmask }}
+{% endif %}
  no shutdown
-{% if gateway %}
+{% if gateway and not ops_retired %}
 ip route 0.0.0.0 0.0.0.0 {{ gateway }}
 {% endif %}
 {% endif %}
@@ -52,6 +61,10 @@ snmp-server enable traps snmp linkdown linkup coldstart
 {% if cap_traps_config %}
 snmp-server enable traps config
 {% endif %}
+{# informs: IOS localizes the remote user's keys with PandoraBox's engine ID, so that line must come first #}
+snmp-server engineID remote {{ server_ip }} {{ snmp_engine_id|upper }}
+snmp-server user {{ snmp_user }} PANDORA remote {{ server_ip }} v3 auth sha {{ snmp_auth }}{% if snmp_level == 'priv' %} priv aes 128 {{ snmp_priv }}{% endif %}
+
 snmp-server host {{ server_ip }} informs version 3 {{ snmp_level }} {{ snmp_user }}
 {% if autosave %}
 ! AutoInstall applies to running-config only: save once, then remove this applet

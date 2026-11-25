@@ -80,15 +80,22 @@ def suggest(devices, backbones, edges) -> dict:
 
 def ensure_caps(ctx, ids) -> None:
     """Backbones must route. Boxes pre-configured over SSH/console were already asked (cap_ip_routing); a PnP or
-    AutoInstall box never was: ask it now, over SSH. A box that doesn't answer stays unknown (plan says so)."""
-    for i in ids:
-        if "cap_ip_routing" in ctx.db.vars(i):
-            continue
+    AutoInstall box never was: ask it now, over SSH. A box that doesn't answer stays unknown (plan says so).
+    Every box is also asked whether it routes right now (ip_routing_on): `ip routing` is hidden from the
+    running-config when it is the image's default (IOL L2 has it on), and a routing box ignores
+    `ip default-gateway`. Seen on IOL: members only answered through the old ops-VLAN connected route."""
+    def one(i):
         try:
-            _, caps = ctx.probe(ctx.db.device(i))
-            ctx.db.set_vars(i, {**ctx.db.vars(i), **caps})
+            if "cap_ip_routing" not in ctx.db.vars(i):
+                _, caps = ctx.probe(ctx.db.device(i))
+                ctx.db.set_vars(i, {**ctx.db.vars(i), **caps})
+            out = ctx.ssh_command(ctx.db.device(i), "show ip route | include Default gateway|Gateway of last resort")
+            if "ateway" in out:
+                ctx.db.set_vars(i, {**ctx.db.vars(i), "ip_routing_on": "Gateway of last resort" in out})
         except Exception as e:
             log.info("capability probe of device %s failed: %s", i, e)
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        list(ex.map(one, ids))
 
 
 def plan(ctx, domains: list[dict], members: dict, edges: list[dict]) -> dict:
@@ -203,7 +210,9 @@ def plan(ctx, domains: list[dict], members: dict, edges: list[dict]) -> dict:
         nets = [ops] + [x["net"] for x in dom.values() if x["net"] != own]
         return [f"ip route {n.network_address} {n.netmask} {gw}" for n in nets]
 
-    def routing(i):  # an L3 switch member with ip routing on ignores ip default-gateway
+    def routing(i):  # a member with ip routing on ignores ip default-gateway (ensure_caps asked it)
+        if "ip_routing_on" in db.vars(i):
+            return db.vars(i)["ip_routing_on"]
         b = backup.latest(db, i)
         return bool(b and "\nip routing" in "\n" + b["text"])
 
@@ -220,18 +229,20 @@ def plan(ctx, domains: list[dict], members: dict, edges: list[dict]) -> dict:
                       f" ip address {x['gateway']} {x['net'].netmask}", " no shutdown"]
             lines += [f"ip route {o['net'].network_address} {o['net'].netmask} {o['ops_ip']}"
                       for o in dom.values() if o is not x]
+            lines += [f"snmp-server source-interface informs Vlan{x['vlan']}"]  # informs from its PandoraBox address
         elif i in ips:
             x, role, new_ip = dom[members[i]], "member", ips[i]
             if i in subif:
                 port, v = subif[i]
                 lines += [f"interface {port}.{v}", f" description PANDORA-MGMT via {name(x['backbone'])}",
                           f" encapsulation dot1Q {v}", f" ip address {new_ip} {x['net'].netmask}"]
-                lines += routes(x["gateway"], x["net"])
+                lines += routes(x["gateway"], x["net"]) + [f"snmp-server source-interface informs {port}.{v}"]
             else:
                 lines += vlan_lines(sorted(set(vlans) | {x["vlan"]}))
                 lines += [f"interface Vlan{x['vlan']}", f" description PANDORA-MGMT via {name(x['backbone'])}",
                           f" ip address {new_ip} {x['net'].netmask}", " no shutdown"]
                 lines += routes(x["gateway"], x["net"]) if routing(i) else [f"ip default-gateway {x['gateway']}"]
+                lines += [f"snmp-server source-interface informs Vlan{x['vlan']}"]
         else:
             lines += vlan_lines(vlans)
         for p, vs in sorted(trunk.get(i, {}).items()):
@@ -286,7 +297,7 @@ def _stp_settled(ctx, d) -> bool:
     return not re.search(r"\s(LIS|LRN)\s", out)
 
 
-def apply(ctx, p: dict, verify_timeout=150) -> list[dict]:
+def apply(ctx, p: dict, verify_timeout=None) -> list[dict]:
     """Backbones first (the gateways must exist), then everyone else in parallel; then check SSH on every new
     address and only then make it the device's address in PandoraBox."""
     res = {}
@@ -309,16 +320,24 @@ def apply(ctx, p: dict, verify_timeout=150) -> list[dict]:
             ctx.db.x("INSERT INTO mgmt_members (device_id, backbone_id, ip) VALUES (?,?,?)",
                      int(m), backbone_of[int(m)], ip)
 
+    # Stable, not lucky: right after the design, spanning tree is still settling on the new trunks and SYNs or
+    # whole seconds of a session get lost (seen on real IOL; steady state afterwards: 60/60 logins clean). A member's
+    # path crosses other switches, so wait until *every* switch in the design is settled before judging anyone.
+    # 40 IOL / 76 trunks took longer than 150 s; the window grows with the design.
+    end = time.time() + (verify_timeout or 150 + 5 * len(p["devices"]))
+    pending = [d for d in p["devices"] if res[d["id"]]["pushed"]]
+    while pending and time.time() < end:
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            pending = [d for d, ok in zip(pending, ex.map(lambda d: _stp_settled(ctx, d), pending), strict=True) if not ok]
+        if pending:
+            time.sleep(5)
+
     def verify(d):
         r = res[d["id"]]
         if not d["new_ip"] or not r["pushed"]:
             return
-        # Stable, not lucky: right after the design, spanning tree is still settling on the new trunks and SYNs or
-        # whole seconds of a session get lost (seen on real IOL; steady state afterwards: 60/60 logins clean).
-        end, good = time.time() + verify_timeout, 0
-        while time.time() < end and not _stp_settled(ctx, d):
-            time.sleep(5)
-        while time.time() < end and good < 3:
+        good, stop = 0, max(end, time.time() + 60)  # still a fair try if the settle wait used the window up
+        while time.time() < stop and good < 3:
             good = good + 1 if access.ssh_open(d["new_ip"]) else 0
             time.sleep(3)
         r["reachable"] = good >= 3
@@ -329,6 +348,51 @@ def apply(ctx, p: dict, verify_timeout=150) -> list[dict]:
         list(ex.map(verify, p["devices"]))
     ctx.db.audit("user", "mgmt-design", {"domains": p["domains"], "results": list(res.values())})
     return [{**res[d["id"]], "hostname": d["hostname"], "new_ip": d["new_ip"], "role": d["role"]} for d in p["devices"]]
+
+
+def retire(ctx) -> list[dict]:
+    """Remove the old ops-VLAN address from members that already answer on their domain address (PandoraBox talks
+    to them there: devices.ip == mgmt_members.ip). Backbones keep theirs: it is the PC's way in. The reserved PC
+    ports stay in the ops VLAN. From then on compliance expects `no ip address` there (vars ops_retired).
+
+    Not optional in practice: while a member still has its ops address, the PC's packets reach it through the
+    backbone (domain VLAN) but its replies leave on the connected ops VLAN. No switch then learns the member's
+    domain-VLAN MAC and every packet to it is flooded through the whole domain (asymmetric-routing unicast
+    flood; on IOL it collapsed the emulated links: lost BPDUs, RSTP churn, 17-47 % loss). Before removing, the
+    member must reach its own gateway over the domain VLAN, or it keeps the old address."""
+    def one(m):
+        i, r = m["device_id"], {"id": m["device_id"], "hostname": m["hostname"]}
+        if m["now"] != m["ip"] or not access.ssh_open(m["ip"]):
+            return {**r, "retired": False, "error": f"not reached on {m['ip']} yet: kept its old address"}
+        try:
+            out = ctx.ssh_command(ctx.db.device(i), f"ping {m['gateway']} repeat 3 timeout 1")
+        except Exception as e:
+            out = f"{type(e).__name__}: {e}"
+        if not re.search(r"Success rate is [1-9]", out):
+            return {**r, "retired": False, "error": f"can't reach its gateway {m['gateway']}: kept its old address"}
+        ports = alloc.allocate(ctx.db, ctx.cfg, i)["reserved_ports"]
+        gw = ctx.cfg.get("mgmt_gateway")
+        if is_router(m):
+            lines = [f"interface {ports[0]}", " no ip address"] + ([f"no ip route 0.0.0.0 0.0.0.0 {gw}"] if gw else [])
+        else:
+            lines = [f"interface Vlan{ctx.cfg['mgmt_vlan']}", " no ip address"] + (["no ip default-gateway"] if gw else [])
+        try:
+            res = ctx.ssh_config(ctx.db.device(i), lines)
+            errors = [ln.strip() for ln in res.splitlines() if ERROR.match(ln)]
+        except Exception as e:
+            errors = [f"{type(e).__name__}: {e}"]
+        if not errors:
+            ctx.db.set_vars(i, {**ctx.db.vars(i), "ops_retired": True})
+            ctx.db.save_config(i, "mgmt-retire", "\n".join(lines), "ok")
+        return {**r, "retired": not errors, "error": "; ".join(errors)}
+
+    rows = [m for m in ctx.db.q("SELECT m.device_id, m.ip, d.role, d.hostname, d.ip AS now, x.gateway FROM mgmt_members m "
+                                "JOIN devices d ON d.id=m.device_id JOIN mgmt_domains x ON x.backbone_id=m.backbone_id")
+            if not ctx.db.vars(m["device_id"]).get("ops_retired")]
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        out = list(ex.map(one, rows))
+    ctx.db.audit("user", "mgmt-retire", out)
+    return out
 
 
 def current(db) -> dict:

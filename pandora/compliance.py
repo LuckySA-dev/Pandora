@@ -27,6 +27,7 @@ _IGNORE = [re.compile(p) for p in (
     r"^ logging event subif-link-status$", r"^\s*ipv6 unreachables disable$", r"^end$", r"^\s*[#!].*",
     r"^ no ip address", r"^ exit-peer-policy", r"^ exit-peer-session", r"^ exit-address-family",
     r"^crypto key generate rsa general-keys.*$",
+    r"^ ip dhcp client client-id ascii ",  # IOS leaves it on the port a PnP/AutoInstall box booted from (IOL)
     r"^ip ssh version 2$")]  # IOS-XE 17.x has only v2 and no longer prints it
 # Commands where a new value replaces the old one, so no "no <old value>" is needed first.
 _IDEMPOTENT = [(r"^vlan", r"^name "), (r"^interface ", r"^description "), (r"^interface ", r"^ip address "),

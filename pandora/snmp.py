@@ -35,6 +35,7 @@ IF_OPER = "1.3.6.1.2.1.2.2.1.8"
 IF_HC_IN = "1.3.6.1.2.1.31.1.1.1.6"
 IF_HC_OUT = "1.3.6.1.2.1.31.1.1.1.10"
 CPU_5MIN = "1.3.6.1.4.1.9.9.109.1.1.1.1.8"
+AVG_BUSY5 = "1.3.6.1.4.1.9.2.1.58"           # OLD-CISCO-CPU-MIB: IOL 17.18 has only this one (no cpmCPUTotalTable)
 CDP_CACHE = "1.3.6.1.4.1.9.9.23.1.2.1.1"   # .4 address .6 deviceId .7 devicePort .8 platform; index ifIndex.n
 LLDP_REM = "1.0.8802.1.1.2.1.4.1.1"        # .7 portId .9 sysName; index timeMark.localPort.n
 LLDP_LOC_PORT = "1.0.8802.1.1.2.1.3.7.1.3"  # index localPort
@@ -61,11 +62,17 @@ def level(cfg, dev_vars: dict) -> str | None:
     return "auth" if cfg.get("snmp_allow_auth_nopriv") else None
 
 
+def user(cfg, level) -> str:
+    """A USM user has one security level on PandoraBox's side: pysnmp refuses an authNoPriv inform for a user that
+    has priv ("authNoPriv wanted while priv expected", seen with IOL L2 informs). authNoPriv boxes get their own."""
+    return cfg["snmp_user"] + ("-auth" if level == "auth" else "")
+
+
 def auth(cfg, community: str | None = None, dev: dict | None = None):
     if community:
         return CommunityData(community, mpModel=1)
     if dev and level(cfg, json.loads(dev.get("vars") or "{}")) == "auth":
-        return UsmUserData(cfg["snmp_user"], cfg["snmp_auth"], authProtocol=usmHMACSHAAuthProtocol)
+        return UsmUserData(user(cfg, "auth"), cfg["snmp_auth"], authProtocol=usmHMACSHAAuthProtocol)
     return UsmUserData(cfg["snmp_user"], cfg["snmp_auth"], cfg["snmp_priv"],
                        authProtocol=usmHMACSHAAuthProtocol, privProtocol=usmAesCfb128Protocol)
 
@@ -208,7 +215,7 @@ async def poll(ip, a) -> dict:
                 name = ifn.get(k.rsplit(".", 1)[1])
                 if name and not name.startswith(("Nu", "Vo", "Lo")):
                     out[f"{name}:{label}"] = {"1": "up", "2": "down"}.get(str(v), str(v)) if label == "oper" else str(v)
-        cpu = list((await walk(ip, a, CPU_5MIN, s=s)).values())
+        cpu = list((await walk(ip, a, CPU_5MIN, s=s)).values()) or list((await walk(ip, a, AVG_BUSY5, s=s)).values())
     if cpu:
         out["cpu5min"] = str(cpu[0])
     return out
@@ -221,11 +228,13 @@ def start_receiver(cfg, on_trap, port=162):
     from pysnmp.entity import config
     from pysnmp.entity import engine as eng
     from pysnmp.entity.rfc3413 import ntfrcv
-
-    e = eng.SnmpEngine()
+    from pysnmp.proto.rfc1902 import OctetString
+    e = eng.SnmpEngine(OctetString(hexValue=cfg["snmp_engine_id"]))  # the ID the devices were told (base.j2)
     config.add_transport(e, udp.DOMAIN_NAME, udp.UdpTransport().open_server_mode((cfg["server_ip"], port)))
     config.add_v3_user(e, cfg["snmp_user"], config.USM_AUTH_HMAC96_SHA, cfg["snmp_auth"],
                        config.USM_PRIV_CFB128_AES, cfg["snmp_priv"])
+    if cfg.get("snmp_allow_auth_nopriv"):
+        config.add_v3_user(e, user(cfg, "auth"), config.USM_AUTH_HMAC96_SHA, cfg["snmp_auth"])
 
     def cb(snmp_engine, state_ref, ctx_engine_id, ctx_name, var_binds, cb_ctx):
         _, addr = snmp_engine.message_dispatcher.get_transport_info(state_ref)

@@ -302,7 +302,7 @@ def _serve_conn(conn, ip):
     if dev is None:
         return conn.close()
     t = paramiko.Transport(conn)
-    t.add_server_key(HOSTKEY)
+    t.add_server_key(getattr(dev, "hostkey", None) or HOSTKEY)
     try:
         t.start_server(server=_Srv(dev))
         chan = t.accept(20)
@@ -815,6 +815,25 @@ def main():
         diff = c.get(f"/api/backups/{hist[-1]['id']}/diff/{hist[0]['id']}").json()["diff"]
         assert len(hist) >= 3 and "@@" in diff
         return f"{len(fix['result']['features'])} features compliant again, {len(hist)} backups"
+
+    @check("SSH host key: pinned on first login; a changed key is refused before the password + problem; forget -> pins the new one")
+    def _():
+        from pandora import hostkeys
+        p = ids["pnp"]
+        box = REGISTRY[ctx.db.device(p)["ip"]]
+        assert hostkeys.pinned(ctx.db, p) == hostkeys.text(HOSTKEY), "first login did not pin the key"
+        box.hostkey, users = paramiko.RSAKey.generate(2048), box.users
+        box.users = {}  # an impostor: no login would work, and none must be tried
+        r = c.post(f"/api/devices/{p}/backups")
+        assert r.status_code >= 400, r.text
+        probs = [x for x in c.get("/api/problems").json() if x["key"] == "ssh-host-key" and x["device_id"] == p]
+        assert probs and probs[0]["severity"] == "high", probs
+        box.users = users
+        assert c.post(f"/api/devices/{p}/forget-host-key").json()["ok"]
+        assert c.post(f"/api/devices/{p}/backups").status_code == 200
+        assert hostkeys.pinned(ctx.db, p) == hostkeys.text(box.hostkey)
+        assert not any(x["key"] == "ssh-host-key" for x in c.get("/api/problems").json())
+        return "changed key refused, problem raised, re-pinned after forget"
 
     # ---- summary --------------------------------------------------------------------------------
     ok = sum(1 for r in RESULTS if r[0])

@@ -7,7 +7,7 @@ import json
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 
-from .. import alerts, alloc, backup, compliance, monitor
+from .. import alerts, alloc, backup, compliance, hostkeys, monitor
 
 FILTERS = ("state", "path", "role", "source", "os_type")
 SEARCH = ("hostname", "alloc_hostname", "serial", "pid", "ip", "mgmt_ip", "mac", "console_port", "version")
@@ -154,6 +154,15 @@ def router(ctx):
     @r.post("/provision")
     def provision(body: dict):
         return ctx.queue([i for i in body["ids"] if ctx.db.device(i)])
+
+    @r.post("/devices/{device_id}/forget-host-key")
+    def forget_host_key(device_id: int):
+        """The user says the box was replaced or reset: the next SSH login pins whatever key it shows."""
+        if err := missing(device_id):
+            return err
+        hostkeys.forget(ctx, device_id, "user: box replaced or reset")
+        ctx.db.audit("user", "host_key:forget", {"id": device_id})
+        return {"ok": True}
 
     @r.post("/devices/{device_id}/credentials")
     def credentials(device_id: int, body: dict):

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from . import access, alloc, platforms, snmp
+from . import access, alloc, hostkeys, platforms, snmp
 from .identify import guess_path, parse_show_version
 from .net.dhcp import ip_opt, opt43_pnp
 
@@ -47,6 +47,7 @@ class Ctx:
         # can't ask, and PnP rolls back the whole file on one rejected line (seen: IOL router, "traps config"):
         # so only lines every IOS takes. vty 0-4 always exists; lines left alone keep IOS's `login` (refused).
         v = {"cap_vty_last": 4, "cap_traps_config": False, **self.cfg, **dev_vars, "snmp_level": level or "priv",
+             "snmp_user": snmp.user(self.cfg, level or "priv"),
              "role": dev["role"], "hostname": a["hostname"],
              "mgmt_ip": a["mgmt_ip"], "reserved_ports": a["reserved_ports"], "gateway": self.cfg["mgmt_gateway"],
              "factory": factory, "autosave": autosave}
@@ -115,7 +116,9 @@ class Ctx:
         from .identify import parse_inventory
         params = {"device_type": "cisco_ios", "host": ip, "username": creds["username"], "password": creds["password"],
                   "secret": creds.get("secret") or creds["password"], "fast_cli": False, "conn_timeout": 10}
-        with connect(params) as conn:
+        known = self.db.find(ip=ip)
+        pin = hostkeys.Pin(self, known and known["id"])
+        with connect(params, pin) as conn:
             conn.enable()
             facts = parse_show_version(conn.send_command("show version"))
             facts.update({k: v for k, v in parse_inventory(conn.send_command("show inventory")).items() if v})
@@ -124,6 +127,8 @@ class Ctx:
         if dev["path"] != "ssh":
             self.db.x("UPDATE devices SET path='ssh' WHERE id=?", dev["id"])
         access.CREDS[dev["id"]] = creds
+        if pin.seen:
+            hostkeys.remember(self.db, dev["id"], pin.seen)
         self.db.audit("user", "added_by_ssh", {"id": dev["id"], "ip": ip})
         dev = self.db.device(dev["id"])
         self.emit("device", dev)
@@ -145,7 +150,10 @@ class Ctx:
                         dev["ip"])
             return None
         text, problems, _ = self.render(dev["id"], factory=True, autosave=method == "autoinstall")
-        return None if problems else text
+        if problems:
+            return None
+        hostkeys.forget(self, dev["id"], f"{method}: factory config (new RSA key) sent")
+        return text
 
     def dhcp_decide(self, mac, info, ip):
         facts = {"mac": mac, "ip": ip, "vendor_class": info["vendor_class"] or None}
@@ -210,6 +218,29 @@ class Ctx:
                 self.db.x("UPDATE devices SET ip=?, hostname=? WHERE id=?", a["mgmt_ip"], a["hostname"], device_id)
         self.db.set_state(device_id, "provisioned" if ok else "failed", detail)
         self.emit("device", self.db.device(device_id))
+        if ok and method in ("pnp", "ztp", "autoinstall"):
+            threading.Thread(target=self.complete, args=(device_id,), daemon=True).start()
+
+    def complete(self, device_id) -> str:
+        """Boot files carry only lines every IOS takes (PnP rolls back the whole file on one rejected line). Now
+        that SSH works, ask this image what it accepts and merge the full config: vty 0-15, `traps config`, ...
+        Re-applying the lines the box already has changes nothing."""
+        dev = self.db.device(device_id)
+        try:
+            _, caps = self.probe(dev)
+            self.db.set_vars(device_id, {**self.db.vars(device_id), **caps})
+            text, problems, _ = self.render(device_id)
+            if problems:
+                raise RuntimeError("; ".join(problems))
+            out = self.ssh_config(dev, [l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("!")])
+            errors = [l for l in out.splitlines() if l.startswith("%") and "Invalid" in l]
+            result = "; ".join(errors) or "capability-dependent lines added over SSH"
+        except Exception as e:
+            log.info("completing %s over SSH failed: %s", device_id, e)
+            result = f"not completed over SSH: {type(e).__name__}: {e}"
+        self.db.save_config(device_id, "ssh-complete", text if "text" in locals() else "", result)
+        self.db.audit("system", "complete", {"id": device_id, "result": result})
+        return result
 
     # ---- push paths (console / SSH) --------------------------------------------
     def push_async(self, device_id):
@@ -240,6 +271,8 @@ class Ctx:
             self.db.upsert(console_port=dev["console_port"], **con.facts())
             # Factory = no startup-config. The dialog/AutoInstall banner may have scrolled by long before we came.
             con.factory = con.factory or "not present" in con.send("show startup-config", 2)
+            if con.factory:
+                hostkeys.forget(self, dev["id"], "console: factory box, pre-config generates a new RSA key")
             self.db.set_vars(dev["id"], {**self.db.vars(dev["id"]), **parse_caps(*map(con.ask, CAP_QUESTIONS))})
             # Factory = the console showed the setup/autoinstall dialog. A configured box that merely
             # has no login must keep its Vlan1 and keys.
@@ -255,13 +288,16 @@ class Ctx:
                 "host": ip or dev["ip"], "username": c["username"], "password": c["password"],
                 "secret": c.get("secret") or c["password"], "fast_cli": False}
 
+    def session(self, dev):
+        return connect(self.netmiko_params(dev), hostkeys.Pin(self, dev["id"]))
+
     def ssh_command(self, dev, cmd, use_textfsm=False):
-        with connect(self.netmiko_params(dev)) as conn:
+        with self.session(dev) as conn:
             conn.enable()
             return conn.send_command(cmd, use_textfsm=use_textfsm)
 
     def ssh_config(self, dev, lines) -> str:
-        with connect(self.netmiko_params(dev)) as conn:
+        with self.session(dev) as conn:
             conn.enable()
             # A "hostname" line changes the prompt mid-session, and netmiko would wait for the old one
             # (ReadTimeout). Leave config mode ourselves, re-learn the prompt, then save.
@@ -273,7 +309,7 @@ class Ctx:
 
     def probe(self, dev) -> tuple[str, dict]:
         """`show version` plus what this image accepts, asked with IOS's own `?` help (nothing is configured)."""
-        with connect(self.netmiko_params(dev)) as conn:
+        with self.session(dev) as conn:
             conn.enable()
             ver = conn.send_command("show version")
 
@@ -302,15 +338,21 @@ class Ctx:
         self.finish(dev["id"], "ssh", not errors, "; ".join(errors) or "merged + saved")
 
 
-def connect(params, tries=2):
+def connect(params, pin=None, tries=2):
     """netmiko ConnectHandler with one retry on a connect timeout. A SYN lost while spanning tree settles (seen on
     real IOL right after the management design turned ports into trunks) must not fail a backup, push or
-    compliance check. A wrong password is not retried."""
+    compliance check. A wrong password or a changed host key is not retried. `pin` (hostkeys.Pin) checks the
+    device's SSH host key before the password is sent."""
     from netmiko import ConnectHandler
     from netmiko.exceptions import NetmikoTimeoutException
     for k in range(tries):
         try:
-            return ConnectHandler(**params)
+            if pin is None:
+                return ConnectHandler(**params)
+            conn = ConnectHandler(**params, auto_connect=False)
+            conn.key_policy = pin
+            conn._open()
+            return conn
         except NetmikoTimeoutException:
             if k == tries - 1:
                 raise

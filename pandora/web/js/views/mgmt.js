@@ -65,7 +65,11 @@ export async function mount(root) {
         <td>${r.pushed ? html`<span class="state"><span class="led green"></span>Yes</span>` : html`<span class="state"><span class="led red"></span>No</span>`}</td>
         <td>${!r.new_ip ? "" : r.reachable ? html`<span class="state"><span class="led green"></span>${r.new_ip}</span>` : html`<span class="state"><span class="led amber"></span>${r.new_ip} not answering yet</span>`}</td>
         <td>${r.error || ""}</td></tr>`)}</tbody></table></div>
-      <p class="muted">A device that doesn't answer on its new address keeps its old one in PandoraBox. Check the PC routes, then run the wizard again.</p>`;
+      <p class="muted">A device that doesn't answer on its new address keeps its old one in PandoraBox. Check the PC routes, then run the wizard again.</p>
+      <h3>Old addresses</h3>
+      <p>Every member still has its pre-config address in VLAN ${cur.ops_vlan}. Remove it from the members that answer on their new address; backbones keep theirs, it is the PC's way in. Do it now: until then a member answers over the old VLAN, so switches never learn its new address and flood every packet to it through the domain.</p>
+      <button class="btn" data-act="retire" ${st.busy ? "disabled" : ""}>Remove old addresses</button>
+      ${st.retired ? html`<ul>${st.retired.map((r) => html`<li>${r.hostname}: ${r.retired ? "removed" : r.error}</li>`)}</ul>` : ""}`;
   }
 
   const draw = () => {
@@ -114,6 +118,11 @@ export async function mount(root) {
     const act = e.target.closest("[data-act]")?.dataset.act;
     if (!act) return;
     if (act === "back") { st.step -= 1; draw(); }
+    if (act === "retire" && confirm("Remove the old management-VLAN address from every member that answers on its new address?")) {
+      st.busy = true; draw();
+      const r = await attempt(() => api.post("/api/mgmt/retire", { confirm: true }), "Old addresses removed");
+      st.busy = false; st.retired = r ? r.results : []; draw();
+    }
     if (act === "restart") { st.step = 0; st.plan = st.results = null; draw(); }
     if (act === "suggest") await suggest();
     if (act === "replan") await replan();

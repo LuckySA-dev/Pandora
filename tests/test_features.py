@@ -169,7 +169,7 @@ def test_image_caps_from_real_iol_help_shape_the_config(ctx):
     text, problems, _ = ctx.render(d["id"])
     assert not problems and "line vty 0 4\n" in text and "traps config" not in text
     assert "snmp-server group PANDORA v3 auth\n" in text and "priv aes" not in text
-    assert "informs version 3 auth pandora" in text
+    assert "informs version 3 auth pandora-auth" in text  # its own USM user: one level per user on the receiver
 
 
 def test_console_probe_never_presses_a_key_on_a_box_that_is_zero_touching(monkeypatch):
@@ -378,3 +378,13 @@ def test_backbone_must_be_an_l3_switch(ctx):
     ctx.db.set_vars(ids["a2"], {k: v for k, v in ctx.db.vars(ids["a2"]).items() if k != "cap_ip_routing"})
     p = mgmt.plan(ctx, dom, {}, edges)  # never probed and no answer: blocked, not assumed
     assert not p["ok"] and any("could not check" in x for x in p["problems"])
+
+
+def test_retired_ops_address_is_what_compliance_expects(ctx):
+    d = add(ctx, 91)
+    text, problems, a = ctx.render(d["id"])
+    assert not problems and f" ip address {a['mgmt_ip']} " in text
+    ctx.db.set_vars(d["id"], {"ops_retired": True})
+    text, _, _ = ctx.render(d["id"])
+    assert f"interface Vlan{ctx.cfg['mgmt_vlan']}\n description PANDORA-MGMT\n no ip address\n" in text
+    assert a["mgmt_ip"] not in text
