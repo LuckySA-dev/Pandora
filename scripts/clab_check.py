@@ -293,14 +293,17 @@ def mgmt_checks(ctx, lab, ids):
         return (f"{len(nodes)} logins over the management domains; compliant incl. the design lines on all "
                 f"{designed} (routers: only the lab's shut port)")
 
-    @check("drift in the management design (a member lost its default gateway) -> detected -> fixed")
+    @check("drift in the management design (someone edited a member's domain SVI) -> detected -> fixed")
     def _():
+        # a drift that leaves the management path alone: removing the gateway instead made the check depend on
+        # ARP over VLAN 99 converging in time (it failed once in three runs)
         m = next(n for n in nodes if ids[n] not in bb and n not in lab["router"])
-        gw = next(x["gateway"] for x in st["plan"]["domains"] if x["backbone"] == st["members"][ids[m]])
-        ctx.ssh_config(ctx.db.device(ids[m]), [f"no ip default-gateway {gw}"])
+        vlan = next(x["vlan"] for x in st["plan"]["domains"] if x["backbone"] == st["members"][ids[m]])
+        ctx.ssh_config(ctx.db.device(ids[m]), [f"interface Vlan{vlan}", " description edited by hand"])
         res = compliance.run(ctx, ids[m])
         bad = [f["name"] for f in res["features"] if not f["compliant"]]
-        assert bad == ["mgmt-design"] and f"ip default-gateway {gw}" in res["remediation"], (bad, res["remediation"])
+        assert bad == ["mgmt-design"] and any(x.startswith(" description PANDORA-MGMT") for x in res["remediation"]), \
+            (bad, res["remediation"])
         fix = compliance.remediate(ctx, ids[m])
         assert fix["result"]["compliant"], fix["result"]
         return f"{m}: drift seen as mgmt-design, plan {res['remediation']}, compliant again"

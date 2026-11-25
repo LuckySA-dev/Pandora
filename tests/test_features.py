@@ -350,3 +350,7 @@ def test_compliance_checks_the_management_design_as_ios_prints_it():
     r, f = check(base.replace("ip default-gateway 10.10.0.1\n", "") + trunk)
     assert not f["mgmt-design"] and "ip default-gateway 10.10.0.1" in r["remediation"]
     assert f["hostname"]  # the rest of the device is judged as before
+    r, f = check(base + trunk + "no ip routing\n")  # routing turned off on purpose: IOS prints it, so it shows
+    assert not f["mgmt-design"] and "ip routing" in r["remediation"]
+    r, f = check(base + trunk + " switchport trunk allowed vlan remove 99\n")  # not a form IOS prints: not trusted
+    assert not f["mgmt-design"]

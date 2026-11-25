@@ -27,8 +27,7 @@ _IGNORE = [re.compile(p) for p in (
     r"^ logging event subif-link-status$", r"^\s*ipv6 unreachables disable$", r"^end$", r"^\s*[#!].*",
     r"^ no ip address", r"^ exit-peer-policy", r"^ exit-peer-session", r"^ exit-address-family",
     r"^crypto key generate rsa general-keys.*$",
-    r"^ip ssh version 2$",  # IOS-XE 17.x has only v2 and no longer prints it
-    r"^ip routing$")]  # on by default on L3 images, and then not printed: the compare can't judge it
+    r"^ip ssh version 2$")]  # IOS-XE 17.x has only v2 and no longer prints it
 # Commands where a new value replaces the old one, so no "no <old value>" is needed first.
 _IDEMPOTENT = [(r"^vlan", r"^name "), (r"^interface ", r"^description "), (r"^interface ", r"^ip address "),
                (r"^interface ", r"^switchport mode "), (r"^interface ", r"^authentication host-mode "),
@@ -98,8 +97,14 @@ def _norm(line: str) -> str:
 def _allows(children: list[str], want: str) -> bool:
     """`switchport trunk allowed vlan add 10,99` holds if the port's list contains them. IOS prints no list when
     all VLANs are allowed, and splits a long one over `... allowed vlan 1-5` + `... allowed vlan add 7`."""
-    lists = [c.rsplit(" ", 1)[1] for c in children if c.startswith("switchport trunk allowed vlan ")]
-    if not lists or any(x.lower() == "all" for x in lists):
+    found = [c for c in children if c.startswith("switchport trunk allowed vlan ")]
+    if not found:
+        return True
+    canon = [re.fullmatch(r"switchport trunk allowed vlan (?:add )?([\d,\-]+|all|none)", c, re.I) for c in found]
+    if not all(canon):
+        return False  # remove/except or anything else: can't judge it safely, so it isn't held
+    lists = [m.group(1) for m in canon]
+    if any(x.lower() == "all" for x in lists):
         return True
     have = set()
     for spec in ",".join(x for x in lists if x.lower() != "none").split(","):
@@ -121,6 +126,11 @@ def _held(k: str, children: list[str]) -> bool:
 
 
 def _feature(parent: str, reserved: set[str], vlan: int, design: set[str] = frozenset()) -> str:
+    # the PC's reserved ports and the ops VLAN keep their strict checks even if a design line ever named them
+    if parent in reserved:
+        return "mgmt-ports"
+    if parent in (f"vlan {vlan}", f"interface Vlan{vlan}"):
+        return "mgmt-vlan"
     if parent in design:  # what the management design wizard pushed (see mgmt.py)
         return "mgmt-design"
     if parent.startswith("hostname "):
@@ -139,6 +149,8 @@ def _feature(parent: str, reserved: set[str], vlan: int, design: set[str] = froz
 def _covered(parent: str, have: dict) -> bool:
     """IOS merges trap keywords with its defaults: 'traps snmp linkdown linkup coldstart' shows up as
     'traps snmp authentication linkdown linkup coldstart warmstart'. Same trap group + superset = present."""
+    if parent == "ip routing":  # on by default on L3 images and then not printed; turned off it shows as "no ..."
+        return "no ip routing" not in have
     m = re.match(r"^(snmp-server enable traps \S+)(.*)$", parent)
     return bool(m) and any(h.startswith(m.group(1) + " ") and set(m.group(2).split()) <= set(h.split()) for h in have)
 
