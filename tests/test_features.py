@@ -356,6 +356,10 @@ def test_compliance_checks_the_management_design_as_ios_prints_it():
     assert not f["mgmt-design"] and "ip routing" in r["remediation"]
     r, f = check(base + trunk + " switchport trunk allowed vlan remove 99\n")  # not a form IOS prints: not trusted
     assert not f["mgmt-design"]
+    r, f = check(base + trunk + " Switchport Trunk Allowed VLAN remove 99\n")  # any spelling: still not trusted
+    assert not f["mgmt-design"]
+    r, f = check(base + trunk + " switchport trunk allowed vlan 1-999999999\n")  # not a VLAN range: fail closed
+    assert not f["mgmt-design"]
 
 
 def test_backbone_must_be_an_l3_switch(ctx):
@@ -364,6 +368,8 @@ def test_backbone_must_be_an_l3_switch(ctx):
     assert parse_caps("", "", "", "ip routing ?\n  <cr>  <cr>\n") == {"cap_ip_routing": True}  # IOL / Cat9k
     assert parse_caps("", "", "", "ip routing ?\n% Unrecognized command\n") == {"cap_ip_routing": False}
     assert parse_caps("", "", "", "") == {}  # unreadable help: unknown, never guessed
+    assert parse_caps("", "", "", "ip routing ?\n% Ambiguous command: \"ip routing\"\n") == {}  # unknown, not yes
+    assert parse_caps("", "", "", "ip routing ? see <cr> below\n  protocol  Something\n") == {}  # <cr> not on its own
     ids, edges = _campus(ctx)
     dom = [{"backbone": ids["a2"], "vlan": 10, "subnet": "10.10.0.0/24"}]
     ctx.db.set_vars(ids["a2"], {**ctx.db.vars(ids["a2"]), "cap_ip_routing": False})  # a 2960 LAN Base, say

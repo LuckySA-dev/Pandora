@@ -274,7 +274,19 @@ def _push(ctx, d) -> dict:
     return {"id": d["id"], "pushed": not errors, "error": "; ".join(errors), "lines": lines}
 
 
-def apply(ctx, p: dict, verify_timeout=90) -> list[dict]:
+def _stp_settled(ctx, d) -> bool:
+    """No port of this switch still listening/learning (classic PVST takes ~30 s per newly allowed VLAN). Asked over
+    the address PandoraBox already uses, which the new trunks don't touch. Routers and errors don't block."""
+    if not d["trunks"]:
+        return True
+    try:
+        out = ctx.ssh_command(ctx.db.device(d["id"]), "show spanning-tree | include  LIS | LRN ")
+    except Exception:
+        return True
+    return not re.search(r"\s(LIS|LRN)\s", out)
+
+
+def apply(ctx, p: dict, verify_timeout=150) -> list[dict]:
     """Backbones first (the gateways must exist), then everyone else in parallel; then check SSH on every new
     address and only then make it the device's address in PandoraBox."""
     res = {}
@@ -301,10 +313,15 @@ def apply(ctx, p: dict, verify_timeout=90) -> list[dict]:
         r = res[d["id"]]
         if not d["new_ip"] or not r["pushed"]:
             return
-        end = time.time() + verify_timeout
-        while time.time() < end and not access.ssh_open(d["new_ip"]):
+        # Stable, not lucky: right after the design, spanning tree is still settling on the new trunks and SYNs or
+        # whole seconds of a session get lost (seen on real IOL; steady state afterwards: 60/60 logins clean).
+        end, good = time.time() + verify_timeout, 0
+        while time.time() < end and not _stp_settled(ctx, d):
+            time.sleep(5)
+        while time.time() < end and good < 3:
+            good = good + 1 if access.ssh_open(d["new_ip"]) else 0
             time.sleep(3)
-        r["reachable"] = access.ssh_open(d["new_ip"])
+        r["reachable"] = good >= 3
         if r["reachable"]:  # from now on PandoraBox talks to it through its management domain
             ctx.db.update(d["id"], ip=d["new_ip"])
             ctx.emit("device", ctx.db.device(d["id"]))

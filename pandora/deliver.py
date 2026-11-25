@@ -111,12 +111,11 @@ class Ctx:
 
     def add_by_ssh(self, ip, creds) -> dict:
         """Add an already-configured device by address + login (no SNMP needed): log in, read what it is."""
-        from netmiko import ConnectHandler
 
         from .identify import parse_inventory
         params = {"device_type": "cisco_ios", "host": ip, "username": creds["username"], "password": creds["password"],
                   "secret": creds.get("secret") or creds["password"], "fast_cli": False, "conn_timeout": 10}
-        with ConnectHandler(**params) as conn:
+        with connect(params) as conn:
             conn.enable()
             facts = parse_show_version(conn.send_command("show version"))
             facts.update({k: v for k, v in parse_inventory(conn.send_command("show inventory")).items() if v})
@@ -257,14 +256,12 @@ class Ctx:
                 "secret": c.get("secret") or c["password"], "fast_cli": False}
 
     def ssh_command(self, dev, cmd, use_textfsm=False):
-        from netmiko import ConnectHandler
-        with ConnectHandler(**self.netmiko_params(dev)) as conn:
+        with connect(self.netmiko_params(dev)) as conn:
             conn.enable()
             return conn.send_command(cmd, use_textfsm=use_textfsm)
 
     def ssh_config(self, dev, lines) -> str:
-        from netmiko import ConnectHandler
-        with ConnectHandler(**self.netmiko_params(dev)) as conn:
+        with connect(self.netmiko_params(dev)) as conn:
             conn.enable()
             # A "hostname" line changes the prompt mid-session, and netmiko would wait for the old one
             # (ReadTimeout). Leave config mode ourselves, re-learn the prompt, then save.
@@ -276,8 +273,7 @@ class Ctx:
 
     def probe(self, dev) -> tuple[str, dict]:
         """`show version` plus what this image accepts, asked with IOS's own `?` help (nothing is configured)."""
-        from netmiko import ConnectHandler
-        with ConnectHandler(**self.netmiko_params(dev)) as conn:
+        with connect(self.netmiko_params(dev)) as conn:
             conn.enable()
             ver = conn.send_command("show version")
 
@@ -306,6 +302,22 @@ class Ctx:
         self.finish(dev["id"], "ssh", not errors, "; ".join(errors) or "merged + saved")
 
 
+def connect(params, tries=2):
+    """netmiko ConnectHandler with one retry on a connect timeout. A SYN lost while spanning tree settles (seen on
+    real IOL right after the management design turned ports into trunks) must not fail a backup, push or
+    compliance check. A wrong password is not retried."""
+    from netmiko import ConnectHandler
+    from netmiko.exceptions import NetmikoTimeoutException
+    for k in range(tries):
+        try:
+            return ConnectHandler(**params)
+        except NetmikoTimeoutException:
+            if k == tries - 1:
+                raise
+            log.info("SSH to %s timed out, trying once more", params.get("host"))
+            time.sleep(5)
+
+
 class NeedCredentials(Exception):
     pass
 
@@ -325,8 +337,10 @@ def parse_caps(vty_help: str, group_help: str, traps_help: str, routing_help: st
         caps["cap_traps_config"] = bool(re.search(r"^\s+config\s", traps_help, re.M))
     # an L3-capable image offers `ip routing <cr>`; an L2-only one (e.g. 2960 LAN Base) doesn't know the command.
     # Only a management backbone needs it (mgmt.plan).
-    if "<cr>" in routing_help:
+    # Strict: a help line that is exactly `<cr>` (IOS prints "  <cr>  <cr>") = yes; the two "no such command"
+    # answers = no; anything else (Ambiguous, Incomplete, garbled) stays unknown, which blocks a backbone.
+    if re.search(r"^\s*<cr>(\s+<cr>)?\s*$", routing_help, re.M):
         caps["cap_ip_routing"] = True
-    elif re.search(r"% (Invalid input|Unrecognized command)", routing_help):
+    elif re.search(r"^\s*% (Invalid input detected|Unrecognized command)", routing_help, re.M):
         caps["cap_ip_routing"] = False
     return caps

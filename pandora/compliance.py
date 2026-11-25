@@ -97,21 +97,25 @@ def _norm(line: str) -> str:
 def _allows(children: list[str], want: str) -> bool:
     """`switchport trunk allowed vlan add 10,99` holds if the port's list contains them. IOS prints no list when
     all VLANs are allowed, and splits a long one over `... allowed vlan 1-5` + `... allowed vlan add 7`."""
-    found = [c for c in children if c.startswith("switchport trunk allowed vlan ")]
+    found = [c for c in children if "allowed vlan" in c.lower()]  # any spelling: unknown forms fail closed
     if not found:
         return True
     canon = [re.fullmatch(r"switchport trunk allowed vlan (?:add )?([\d,\-]+|all|none)", c, re.I) for c in found]
     if not all(canon):
         return False  # remove/except or anything else: can't judge it safely, so it isn't held
-    lists = [m.group(1) for m in canon]
-    if any(x.lower() == "all" for x in lists):
+    lists = [m.group(1).lower() for m in canon]
+    if "all" in lists:
         return True
-    have = set()
-    for spec in ",".join(x for x in lists if x.lower() != "none").split(","):
+    spans = []  # (low, high) as printed; no set materialised, so a hostile "1-999999999" costs nothing
+    for spec in ",".join(x for x in lists if x != "none").split(","):
         a, _, b = spec.partition("-")
-        if a.isdigit():
-            have |= set(range(int(a), int(b or a) + 1))
-    return all(int(v) in have for v in want.split(",") if v.isdigit())
+        if not a.isdigit() or (b and not b.isdigit()):
+            return False
+        lo, hi = int(a), int(b or a)
+        if not 1 <= lo <= hi <= 4094:
+            return False  # not a VLAN range IOS would print
+        spans.append((lo, hi))
+    return all(any(lo <= int(v) <= hi for lo, hi in spans) for v in want.split(",") if v.isdigit())
 
 
 def _held(k: str, children: list[str]) -> bool:
