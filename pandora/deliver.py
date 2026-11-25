@@ -63,10 +63,13 @@ class Ctx:
             dev = self.db.device(i)
             if role and role != dev["role"]:
                 self.db.x("UPDATE devices SET role=? WHERE id=?", role, i)
-                # The hostname carries the role ({site}-{role}-{nn}). A name reserved by an earlier Review with
-                # another role was never sent to the box until it is claimed: take it back and name it again.
-                if dev["state"] in ("discovered", "identified", "needs_credentials", "failed"):
-                    self.db.x("DELETE FROM allocations WHERE device_id=?", i)
+                # The hostname carries the role ({site}-{role}-{nn}): name it again, but only while the reserved
+                # name and address provably never reached the box (never claimed, no config ever sent or saved).
+                # A failed or partial push may have left the mgmt IP on it: that address stays reserved, or a
+                # second box could get the same one.
+                if dev["state"] in ("discovered", "identified", "needs_credentials") and not self.db.q(
+                        "SELECT 1 FROM configs WHERE device_id=? LIMIT 1", i):
+                    alloc.release(self.db, i)  # name, address and the ports chosen for the old role
             if role_vars is not None:  # role vars come from the wizard; keep the probed image caps
                 self.db.set_vars(i, {**{k: v for k, v in self.db.vars(i).items() if k.startswith("cap_")},
                                      **role_vars})

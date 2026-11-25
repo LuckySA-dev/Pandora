@@ -405,3 +405,12 @@ def test_changing_the_role_before_claiming_renames_the_box(ctx):
     again = ctx.preview([d["id"]], role="router_edge")[0]
     assert "-sw-" in first["hostname"] and "-rtr-" in again["hostname"], (first["hostname"], again["hostname"])
     assert ctx.preview([d["id"]], role="router_edge")[0]["hostname"] == again["hostname"]  # same role: same name
+
+
+def test_a_name_that_may_have_reached_the_box_is_kept_on_a_role_change(ctx):
+    d = add(ctx, 93)
+    first = ctx.preview([d["id"]], role="switch_access")[0]
+    ctx.db.save_config(d["id"], "pnp", "hostname x", "failed half way")  # something was sent
+    ctx.db.set_state(d["id"], "failed", "push failed")
+    again = ctx.preview([d["id"]], role="router_edge")[0]
+    assert (again["hostname"], again["mgmt_ip"]) == (first["hostname"], first["mgmt_ip"])
