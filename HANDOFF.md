@@ -78,6 +78,7 @@ Verification (all green on 2026-11-25)
 - **Keep `wsl -d Debian -- sleep infinity` running** (a background task). WSL stops an idle distro ~15 s after the last Windows-side command and every container dies with it ("Exited (0)"). This was misdiagnosed once as an NVRAM problem.
 - Deploy with `CLAB_LABDIR_BASE=$HOME/clab containerlab deploy -t lab/<x>.clab.yml --reconfigure` (lab dir on the Linux disk).
 - `docker restart` of a clab node loses its veth links: redeploy instead.
+- If the keepalive ends (it did once, exit 4, after many hours), every IOL node shows `Exited (0)` and only the linux nodes come back on their own, without links. Recover: start the keepalive again, wait ~30 s for Docker, then `containerlab deploy ... --reconfigure` each lab (the first deploy right after WSL starts can fail; run it again).
 
 | Lab | Nodes | Check | Notes |
 |---|---|---|---|
