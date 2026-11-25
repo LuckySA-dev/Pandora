@@ -124,7 +124,18 @@ ZTP is the one path not yet proven on a real image (IOL has no Guest Shell), so 
 - [ ] Terminal: prompt appears, typing has no lag, backspace and Ctrl+C work, `show run` scrolls
 - [ ] Agent (if an API key is set): "add VLAN 20 on <port> of <switch>": it looks, proposes, waits for Approve, applies, verifies
 
-## 7. Report back
+## 7. Management network (after pre-config)
+
+Plug the PC (one LAN card is enough) into a reserved port of the switch you'll use as backbone, still on VLAN 99.
+
+- [ ] Management page: tick the backbone L3 switch(es), keep or change their VLAN/subnet
+- [ ] Members: the suggestion matches the cabling (each device under the backbone it hangs off)
+- [ ] Review: no problems; read the trunk ports, they must be inter-switch links only
+- [ ] run the "On this PC" `New-NetRoute` lines in an Administrator PowerShell
+- [ ] Apply: every device shows its new SSH address in green
+- [ ] SSH (Terminal tab) to a device behind each backbone works; the data VLANs on the trunked links still pass traffic
+
+## 8. Report back
 
 Fill one row per box and add it to HANDOFF.md:
 

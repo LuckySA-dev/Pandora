@@ -4,7 +4,9 @@
 #   CLAB_LABDIR_BASE=$HOME/clab containerlab deploy -t lab/medium.clab.yml --reconfigure
 #   docker exec -it clab-pandora-medium-pandora python scripts/clab_check.py lab/medium.clab.yml
 # clab_check reads this file: nodes, mgmt IPs, which ports are cabled (CDP must see every link) and which
-# are free (the first free one becomes that node's reserved mgmt port). Every node keeps one port free.
+# are free (the first free one becomes that node's reserved mgmt port; d1's is the one PandoraBox is cabled to).
+# After the day-2 checks it applies the management design: d1 and d2 as L3 backbones (VLAN 10 / 20), every
+# other node under its nearest backbone, and checks SSH to every new address from PandoraBox's eth1.
 name: pandora-medium
 
 mgmt:
@@ -24,10 +26,15 @@ topology:
       mgmt-ipv4: 172.30.32.2
       binds:
         - /mnt/c/Users/User/Desktop/Coding/Pandora:/app
+      exec:
+        - ip addr add 10.99.0.1/24 dev eth1   # the PC's single LAN card, in d1's reserved mgmt port (VLAN 99)
     r1: {mgmt-ipv4: 172.30.32.11}
     r2: {mgmt-ipv4: 172.30.32.12}
-    d1: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.32.21}
-    d2: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.32.22}
+    # labels pandora.*: the management design clab_check applies after pre-config (two L3 backbones)
+    d1: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.32.21,
+         labels: {pandora.backbone: "10 10.10.0.0/24"}}
+    d2: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.32.22,
+         labels: {pandora.backbone: "20 10.20.0.0/24"}}
     a1: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.32.31}
     a2: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.32.32}
     a3: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.32.33}
@@ -37,6 +44,7 @@ topology:
     a7: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.32.37}
     a8: {type: L2, image: "vrnetlab/cisco_iol:L2-17.18.02", mgmt-ipv4: 172.30.32.38}
   links:
+    - endpoints: ["pandora:eth1", "d1:Ethernet1/3"]
     - endpoints: ["r1:Ethernet0/1", "r2:Ethernet0/1"]
     - endpoints: ["r1:Ethernet0/2", "d1:Ethernet0/1"]
     - endpoints: ["r2:Ethernet0/2", "d2:Ethernet0/1"]

@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS problems (
 );
 CREATE INDEX IF NOT EXISTS problems_open ON problems (device_id, key, closed);
 CREATE TABLE IF NOT EXISTS compliance (device_id INTEGER PRIMARY KEY, ts REAL, result TEXT);
+-- management design (mgmt.py): one domain per L3 backbone, one SSH address per member; UNIQUE = no clashes
+CREATE TABLE IF NOT EXISTS mgmt_domains (
+  backbone_id INTEGER PRIMARY KEY REFERENCES devices(id), vlan INTEGER NOT NULL UNIQUE,
+  subnet TEXT NOT NULL UNIQUE, gateway TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mgmt_members (
+  device_id INTEGER PRIMARY KEY REFERENCES devices(id), backbone_id INTEGER NOT NULL, ip TEXT NOT NULL UNIQUE
+);
 CREATE INDEX IF NOT EXISTS samples_dev ON snmp_samples (device_id, ts);
 """
 

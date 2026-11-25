@@ -39,10 +39,14 @@ def load_lab(path: Path) -> dict:
     """Nodes, roles, cabled links and one free port per node, straight from the containerlab file."""
     topo = yaml.safe_load(path.read_text())
     nodes = {n: v for n, v in topo["topology"]["nodes"].items() if v.get("kind", "cisco_iol") == "cisco_iol"}
-    links, used = set(), {n: set() for n in nodes}
+    links, used, pc = set(), {n: set() for n in nodes}, {}
     for link in topo["topology"]["links"]:
         (a, pa), (b, pb) = (e.split(":") for e in link["endpoints"])
-        if a in nodes and b in nodes:
+        if "pandora" in (a, b):  # PandoraBox's own cable: that port is the node's mgmt port (PC side)
+            n, p = (b, pb) if a == "pandora" else (a, pa)
+            pc[n] = p
+            used[n].add(p)
+        elif a in nodes and b in nodes:
             links.add(frozenset({(a, pa), (b, pb)}))
             used[a].add(pa)
             used[b].add(pb)
@@ -55,11 +59,13 @@ def load_lab(path: Path) -> dict:
     for n in nodes:  # the container starts with (highest eth + 4) // 4 slots; e0/0 is the clab mgmt port
         slots = (max([index(p) for p in used[n]] + [1]) + 4) // 4
         ports = [f"Ethernet{i // 4}/{i % 4}" for i in range(1, slots * 4)]
-        free[n] = next(p for p in ports if p not in used[n])
+        free[n] = pc.get(n) or next(p for p in ports if p not in used[n])
     server = topo["topology"]["nodes"]["pandora"]["mgmt-ipv4"]
     return {"name": topo["name"], "server": server, "ips": {n: v["mgmt-ipv4"] for n, v in nodes.items()},
             "router": {n for n, v in nodes.items() if v.get("type") != "L2"}, "links": links, "used": used,
-            "mgmt_port": free}
+            "mgmt_port": free, "pc": pc,
+            "backbones": {n: v["labels"]["pandora.backbone"].split() for n, v in nodes.items()
+                          if "pandora.backbone" in (v.get("labels") or {})}}
 
 
 def check(name):
@@ -212,12 +218,77 @@ def main():
     def _():
         return asyncio.run(_terminal(ids[router]))
 
+    if lab["backbones"] and lab["pc"]:
+        mgmt_checks(ctx, lab, ids)
+
     ok = sum(r[0] for r in RESULTS)
     print(f"\n{ok}/{len(RESULTS)} checks passed against containerlab IOL ({lab['name']})", flush=True)
     if serve:
         print(f"UI on http://localhost:{PORT} (from Windows too)", flush=True)
         threading.Event().wait()
     return 0 if ok == len(RESULTS) else 1
+
+
+def mgmt_checks(ctx, lab, ids):
+    """The management design wizard's job, on real IOL: L3 backbones, members under them, SSH on new addresses."""
+    import subprocess
+
+    from netmiko import ConnectHandler
+
+    from pandora import mgmt
+    nodes, st = lab["ips"], {}
+    bb = {ids[n]: v for n, v in lab["backbones"].items()}
+
+    @check("management design: every node suggested under its nearest backbone (from CDP)")
+    def _():
+        # Lab prep, not PandoraBox: the routers' reserved mgmt ports aren't cabled here, but IOL shows unplugged
+        # ports as up; shut them so they behave like real empty ports.
+        def shut(n):
+            with ConnectHandler(device_type="cisco_xe", host=nodes[n], **LOGIN) as c:
+                c.send_config_set([f"interface {lab['mgmt_port'][n]}", " shutdown"])
+        pmap(shut, [n for n in lab["router"] if n not in lab["pc"]])
+        st["edges"] = asyncio.run(topology.collect(ctx))["edges"]
+        st["members"] = mgmt.suggest(ctx.db.devices(), list(bb), st["edges"])
+        name = {i: n for n, i in ids.items()}
+        missing = [n for n in nodes if ids[n] not in bb and ids[n] not in st["members"]]
+        assert not missing, f"no backbone suggested for {missing}"
+        return "; ".join(f"{name[b]}: {', '.join(sorted(name[m] for m, x in st['members'].items() if x == b))}"
+                         for b in bb)
+
+    @check("management design: plan has no problems (domains, trunks from CDP, router subinterfaces)")
+    def _():
+        doms = [{"backbone": b, "vlan": int(v[0]), "subnet": v[1]} for b, v in bb.items()]
+        st["plan"] = p = mgmt.plan(ctx, doms, st["members"], st["edges"])
+        assert p["ok"], p["problems"]
+        for r in p["pc_routes"]:  # what the wizard tells the operator to run on the PC
+            subprocess.run(["ip", "route", "replace", r["subnet"], "via", r["via"], "dev", "eth1"], check=True)
+        roles = [d["role"] for d in p["devices"]]
+        return (f"{roles.count('backbone')} backbones, {roles.count('member')} members, "
+                f"{sum(len(d['trunks']) for d in p['devices'])} trunk ports; PC routes " +
+                ", ".join(f"{r['subnet']} via {r['via']}" for r in p["pc_routes"]))
+
+    @check("management design applied: every device answers SSH on its new address in its domain")
+    def _():
+        t0 = time.time()
+        res = mgmt.apply(ctx, st["plan"])
+        bad = {r["hostname"]: r.get("error") or "not reachable" for r in res
+               if not r["pushed"] or (r["new_ip"] and not r.get("reachable"))}
+        assert not bad, bad
+        moved = [d for d in ctx.db.devices() if d["ip"] and not d["ip"].startswith("172.30.")]
+        assert len(moved) == len(nodes), [d["ip"] for d in ctx.db.devices()]
+        return f"{len(res)} devices in {time.time() - t0:.0f}s, PandoraBox now reaches all of them through the domains"
+
+    @check("after the design: login works through the domains and every node is still compliant")
+    def _():
+        out = pmap(lambda n: ctx.ssh_command(ctx.db.device(ids[n]), "show ip interface brief | include Vlan|[.]"),
+                   nodes)
+        assert all(out), "empty answer"
+        res = dict(pmap(lambda n: (n, compliance.run(ctx, ids[n])), nodes))
+        # the routers' only drift is the lab prep above (their unplugged reserved port shut): anything else is real
+        drift = {n: [f["name"] for f in r["features"] if not f["compliant"]] for n, r in res.items() if not r["compliant"]}
+        drift = {n: f for n, f in drift.items() if not (n in lab["router"] and f == ["mgmt-ports"])}
+        assert not drift, drift
+        return f"{len(nodes)} logins over the management domains; compliant (routers: only the lab's shut port)"
 
 
 def _try(fn):

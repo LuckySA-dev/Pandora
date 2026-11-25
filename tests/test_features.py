@@ -257,3 +257,70 @@ def test_ztp_report_cannot_move_a_serial_onto_another_row(ctx):
         c.post("/ztp/done", json={"serial": "FOCVICTIM01", "ok": True, "version": ""})
     assert ctx.db.device(attacker["id"])["serial"] is None  # the victim's serial was not attached to it
     assert ctx.db.device(victim["id"])["ip"] == "10.99.0.150"  # and the victim's row is untouched
+
+
+def _campus(ctx):
+    """d1, d2 = L3 switches; a1 under d1 with a3 behind it; a2 under d2; r1 router on d1; a4 only behind r1."""
+    ids = {}
+    for n, (mac, role) in enumerate([("d1", "switch_access"), ("d2", "switch_access"), ("a1", "switch_access"),
+                                     ("a2", "switch_access"), ("a3", "switch_access"), ("r1", "router_edge"),
+                                     ("a4", "switch_access")]):
+        d = ctx.db.upsert(mac=f"aa:00:00:00:01:{n:02x}", pid="C9300-24P", ip=f"172.30.0.{n + 10}")
+        ctx.db.x("UPDATE devices SET role=?, hostname=? WHERE id=?", role, mac, d["id"])
+        ids[mac] = d["id"]
+    ctx.preview(list(ids.values()), ports={str(i): "Ethernet0/3" if n != "d1" else "Ethernet1/3" for n, i in ids.items()})
+    for i in ids.values():
+        ctx.db.set_state(i, "provisioned")
+
+    def e(a, pa, b, pb):
+        return {"from": ids[a], "to": ids[b], "from_port": pa, "to_port": pb}
+    edges = [e("d1", "Ethernet0/2", "d2", "Ethernet0/2"), e("d1", "Ethernet1/0", "a1", "Ethernet0/1"),
+             e("a1", "Ethernet0/2", "a3", "Ethernet0/1"), e("d2", "Ethernet1/0", "a2", "Ethernet0/1"),
+             e("r1", "Ethernet0/2", "d1", "Ethernet0/1"), e("r1", "Ethernet0/1", "a4", "Ethernet0/1")]
+    # every box's Ethernet0/0 on one out-of-band switch: everyone is everyone's CDP neighbor there (as on IOL)
+    names = list(ids)
+    edges += [e(a, "Ethernet0/0", b, "Ethernet0/0") for k, a in enumerate(names) for b in names[k + 1:]]
+    return ids, edges
+
+
+def test_mgmt_design_plans_domains_trunks_and_router_subinterface(ctx):
+    from pandora import mgmt
+    ids, edges = _campus(ctx)
+    sug = mgmt.suggest(ctx.db.devices(), [ids["d1"], ids["d2"]], edges)
+    assert sug == {ids["a1"]: ids["d1"], ids["a3"]: ids["d1"], ids["r1"]: ids["d1"], ids["a2"]: ids["d2"]}
+    assert ids["a4"] not in sug  # only reachable through a router: no suggestion
+    doms = [{"backbone": ids["d1"], "vlan": 10, "subnet": "10.10.0.0/24"},
+            {"backbone": ids["d2"], "vlan": 20, "subnet": "10.20.0.0/24"}]
+    p = mgmt.plan(ctx, doms, sug, edges)
+    assert p["ok"], p["problems"]
+    by = {d["hostname"]: d for d in p["devices"]}
+    ops_ip = {n: ctx.db.q("SELECT mgmt_ip FROM allocations WHERE device_id=?", ids[n])[0]["mgmt_ip"] for n in ids}
+    d1 = "\n".join(by["d1"]["lines"])
+    assert "ip routing" in d1 and "interface Vlan10\n description PANDORA-MGMT domain gateway\n ip address 10.10.0.1 255.255.255.0" in d1
+    assert f"ip route 10.20.0.0 255.255.255.0 {ops_ip['d2']}" in d1  # the other domain, via d2's ops address
+    assert by["d1"]["trunks"] == ["Ethernet0/1", "Ethernet0/2", "Ethernet1/0"]
+    a1 = "\n".join(by["a1"]["lines"])
+    assert "interface Vlan10" in a1 and "ip default-gateway 10.10.0.1" in a1 and by["a1"]["new_ip"] == "10.10.0.10"
+    assert by["a1"]["trunks"] == ["Ethernet0/1", "Ethernet0/2"]  # its uplink, and the link a3 hangs off
+    assert "switchport trunk allowed vlan add 10,99" in a1
+    r1 = "\n".join(by["r1"]["lines"])
+    assert "interface Ethernet0/2.10\n description PANDORA-MGMT via d1\n encapsulation dot1Q 10" in r1
+    assert "ip route 10.99.0.0 255.255.255.0 10.10.0.1" in r1 and "ip route 0.0.0.0" not in r1  # no default route
+    assert "switchport" not in r1
+    assert not any("Ethernet0/0" in d["trunks"] for d in p["devices"])  # the shared out-of-band segment is no link
+    assert "switchport trunk allowed vlan add 99" in "\n".join(by["d2"]["lines"])  # backbone link: ops VLAN
+    assert {r["subnet"]: r["via"] for r in p["pc_routes"]} == {"10.10.0.0/24": ops_ip["d1"], "10.20.0.0/24": ops_ip["d2"]}
+
+    bad = mgmt.plan(ctx, doms + [{"backbone": ids["r1"], "vlan": 20, "subnet": "10.99.0.0/25"}],
+                    {**sug, ids["a4"]: ids["d1"]}, edges)
+    text = " ".join(bad["problems"])
+    assert not bad["ok"] and "edge router" in text and "VLAN 20 is not free" in text and "overlaps" in text
+    assert "a4 has no CDP path" in text  # behind a router: the VLAN can't be bridged there
+
+
+def test_mgmt_design_keeps_reserved_ports_off_management_paths(ctx):
+    from pandora import mgmt
+    ids, edges = _campus(ctx)
+    edges[1] = {**edges[1], "to_port": "Ethernet0/3"}  # a1's uplink is its reserved PC port
+    p = mgmt.plan(ctx, [{"backbone": ids["d1"], "vlan": 10, "subnet": "10.10.0.0/24"}], {ids["a1"]: ids["d1"]}, edges)
+    assert not p["ok"] and any("reserved PC port" in x for x in p["problems"])

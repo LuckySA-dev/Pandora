@@ -5,6 +5,7 @@
     monitoring  SNMP sweep / poll / samples, traps, problems, dashboard, topology
     agent       AI agent runs and approvals
     terminal    web terminal websocket (SSH / console)
+    mgmt        management network design after pre-config (L3 backbones, domains)
 """
 from urllib.parse import urlsplit
 
@@ -37,5 +38,5 @@ def ui_ok(client_host, headers) -> bool:
 
 
 def routers(ctx):
-    from . import agent, configs, inventory, monitoring, terminal
-    return [m.router(ctx) for m in (inventory, configs, monitoring, agent, terminal)]
+    from . import agent, configs, inventory, mgmt, monitoring, terminal
+    return [m.router(ctx) for m in (inventory, configs, monitoring, mgmt, agent, terminal)]

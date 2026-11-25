@@ -8,6 +8,7 @@ const ROUTES = [
   [/^\/devices\/(?<id>\d+)(?:\/(?<tab>\w+))?$/, "devices", () => import("./views/device.js")],
   [/^\/devices$/, "devices", () => import("./views/devices.js")],
   [/^\/topology$/, "topology", () => import("./views/topology.js")],
+  [/^\/management$/, "management", () => import("./views/mgmt.js")],
   [/^\/problems$/, "problems", () => import("./views/problems.js")],
   [/^\/agent$/, "agent", () => import("./views/agent.js")],
 ];
