@@ -397,3 +397,11 @@ def test_topology_keeps_cables_and_drops_a_shared_segment():
     mesh = [e(a, "Et0/0", b, "Et0/0") for a in (1, 2, 3) for b in (1, 2, 3) if a < b]  # IOL's shared e0/0 bridge
     keep, dropped = point_to_point([cable, *mesh])
     assert keep == [cable] and dropped == 3
+
+
+def test_changing_the_role_before_claiming_renames_the_box(ctx):
+    d = add(ctx, 92)
+    first = ctx.preview([d["id"]], role="switch_access")[0]
+    again = ctx.preview([d["id"]], role="router_edge")[0]
+    assert "-sw-" in first["hostname"] and "-rtr-" in again["hostname"], (first["hostname"], again["hostname"])
+    assert ctx.preview([d["id"]], role="router_edge")[0]["hostname"] == again["hostname"]  # same role: same name

@@ -60,8 +60,13 @@ class Ctx:
     def preview(self, ids, role=None, ports: dict | None = None, role_vars: dict | None = None) -> list[dict]:
         rows = []
         for i in ids:
-            if role:
+            dev = self.db.device(i)
+            if role and role != dev["role"]:
                 self.db.x("UPDATE devices SET role=? WHERE id=?", role, i)
+                # The hostname carries the role ({site}-{role}-{nn}). A name reserved by an earlier Review with
+                # another role was never sent to the box until it is claimed: take it back and name it again.
+                if dev["state"] in ("discovered", "identified", "needs_credentials", "failed"):
+                    self.db.x("DELETE FROM allocations WHERE device_id=?", i)
             if role_vars is not None:  # role vars come from the wizard; keep the probed image caps
                 self.db.set_vars(i, {**{k: v for k, v in self.db.vars(i).items() if k.startswith("cap_")},
                                      **role_vars})

@@ -26,8 +26,11 @@ s = u.spec_from_file_location("relay", "lab/ztp/console_relay.py"); m = u.module
 asyncio.run(m.main([41]))' > /tmp/relay.log 2>&1 &
 fi
 
-for p in /proc/[0-9]*; do c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null); case "$c" in *"-m pandora"*|*clab_check*) kill "${p#/proc/}";; esac; done
-sleep 2
+old=$(for p in /proc/[0-9]*; do c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null); case "$c" in *"-m pandora"*|*clab_check*) echo "${p#/proc/}";; esac; done)
+[ -n "$old" ] && kill $old 2>/dev/null
+for i in 1 2 3 4 5; do ss -lun | grep -q '10.99.0.1:69 ' || break; sleep 1; done
+[ -n "$old" ] && kill -9 $old 2>/dev/null  # one copy only: two would both answer DHCP on br0
+sleep 1
 db=$(ls -d /tmp/pandora-clab-*/pandora.db | head -1)
 cat > /tmp/lab.toml <<'T'
 iface = "br0"
