@@ -245,3 +245,15 @@ def test_device_identity_guards_and_subnet_clash(ctx):
     assert _own(ctx.db, ctx.db.device(pnp["id"]), req(mgmt))  # after it: the agent reports from there
     assert clashes("10.99.0.1/24", [("Wi-Fi", "192.168.1.5/24")]) == []
     assert clashes("10.99.0.1/24", [("Wi-Fi", "10.99.0.50/16")]) == ["Wi-Fi 10.99.0.50/16"]
+
+
+def test_ztp_report_cannot_move_a_serial_onto_another_row(ctx):
+    from fastapi.testclient import TestClient
+
+    from pandora.app import create_app
+    victim = ctx.db.upsert(serial="FOCVICTIM01", pid="C9300-24P", ip="10.99.0.150")
+    attacker = ctx.db.upsert(mac="aa:00:00:00:00:99", ip="testclient")  # a box with no serial yet
+    with TestClient(create_app(ctx, background=False)) as c:
+        c.post("/ztp/done", json={"serial": "FOCVICTIM01", "ok": True, "version": ""})
+    assert ctx.db.device(attacker["id"])["serial"] is None  # the victim's serial was not attached to it
+    assert ctx.db.device(victim["id"])["ip"] == "10.99.0.150"  # and the victim's row is untouched

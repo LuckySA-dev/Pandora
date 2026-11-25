@@ -114,6 +114,10 @@ def foreign_dhcp(iface: str, own_ip: str, timeout=4) -> list[str] | None:
     None = could not probe (no Npcap/raw access)."""
     try:
         from scapy.all import BOOTP, DHCP, IP, UDP, Ether, conf, get_if_hwaddr, srp
+        from scapy.error import Scapy_Exception
+    except ImportError:
+        return None
+    try:
         conf.checkIPaddr = False  # offers come from the server's address, not the broadcast we sent to
         mac = get_if_hwaddr(iface)
         pkt = (Ether(dst="ff:ff:ff:ff:ff:ff", src=mac) / IP(src="0.0.0.0", dst="255.255.255.255")
@@ -121,7 +125,7 @@ def foreign_dhcp(iface: str, own_ip: str, timeout=4) -> list[str] | None:
                / BOOTP(chaddr=bytes.fromhex(mac.replace(":", "")), xid=0x50414E44, flags=0x8000)
                / DHCP(options=[("message-type", "discover"), "end"]))
         ans, _ = srp(pkt, iface=iface, timeout=timeout, multi=True, verbose=0)
-    except Exception:
+    except (OSError, ValueError, Scapy_Exception):  # no Npcap / no raw access / unknown NIC; real bugs surface
         return None
     return sorted({r[IP].src for _, r in ans if DHCP in r and r[IP].src != own_ip})
 
@@ -129,8 +133,8 @@ def foreign_dhcp(iface: str, own_ip: str, timeout=4) -> list[str] | None:
 def check_segment(cfg) -> list[tuple]:
     found = foreign_dhcp(cfg["iface"], cfg["server_ip"])
     if found is None:
-        return [("warn", "DHCP on segment", "could not probe (Npcap missing or no raw access): make sure the switch "
-                                            "has no uplink to a real network")]
+        return [("warn", "DHCP on segment", "could not probe (Npcap missing or not Administrator). PandoraBox will "
+                                            "refuse to start DHCP unless you confirm with --assume-isolated")]
     if found:
         return [("fail", "DHCP on segment", f"another DHCP server answers on {cfg['iface']!r} ({', '.join(found)}): "
                                             "the switch is connected to a real network. Unplug its uplink first")]

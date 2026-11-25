@@ -48,6 +48,8 @@ def main():
     ap.add_argument("--config", default="pandora.toml")
     ap.add_argument("--db", default="pandora.db")
     ap.add_argument("--no-dhcp", action="store_true", help="UI, console, SNMP and SSH only")
+    ap.add_argument("--assume-isolated", action="store_true",
+                    help="start DHCP even if the check for another DHCP server can't run (no Npcap)")
     ap.add_argument("--preflight", action="store_true", help="check this machine for a real lab run, then exit")
     args = ap.parse_args()
     if args.preflight:
@@ -70,9 +72,10 @@ def main():
         if others:  # the switch has an uplink to a real network: two DHCP servers = an outage for its users
             sys.exit(f"Refusing to start DHCP: another DHCP server answers on {cfg['iface']!r} ({', '.join(others)}). "
                      "Unplug the switch's uplink to the real network, or use --no-dhcp.")
-        if others is None:
-            log.warning("could not check for another DHCP server on %s (Npcap?): make sure the switch has no uplink",
-                        cfg["iface"])
+        if others is None and not args.assume_isolated:  # fail closed: unknown is not "clean"
+            sys.exit(f"Refusing to start DHCP: could not check {cfg['iface']!r} for another DHCP server (install Npcap "
+                     "and run as Administrator). If you are sure the switch has no uplink to a real network, start "
+                     "with --assume-isolated.")
         try:
             dhcp.DhcpServer(cfg["server_ip"], cfg["netmask"], config.ip_range(cfg["dhcp_range"]),
                             ctx.dhcp_decide, cfg["iface"]).start()

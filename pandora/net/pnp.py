@@ -68,9 +68,11 @@ def _own(db, dev, request, strict=False) -> bool:
     address is the identity: once a box is selected (queued/provisioning) only its own addresses may speak for
     its serial: the one it called from / leased, or the mgmt IP we gave it (after the config is applied the
     PnP agent reports from there). strict: also before selection (reports about a box come from that box)."""
-    selected = dev is not None and dev["state"] in ("queued", "provisioning")
-    if not dev or (not dev["ip"] and not selected):
-        return True  # discovery: a box we have no address for yet
+    if not dev:
+        return True  # a box we have never seen: discovery
+    selected = dev["state"] in ("queued", "provisioning")
+    if not dev["ip"]:
+        return not (selected or strict)  # no address to compare: only plain discovery may go on
     mine = {dev["ip"]} - {None}
     if dev["state"] == "provisioning":  # config already sent: the box may now speak from the mgmt IP we gave it
         mine |= {r["mgmt_ip"] for r in db.q("SELECT mgmt_ip FROM allocations WHERE device_id=?", dev["id"])}
@@ -185,11 +187,13 @@ def router(ctx) -> APIRouter:
         data = await request.json()
         serial = data.get("serial") or ""
         dev = ctx.db.find(serial=serial, ip=request.client.host) if serial else None
-        # the report must come from the box, and be about the box it came from: never let it name another row
-        if dev and _own(ctx.db, dev, request, strict=True) and dev["serial"] in (None, serial):
+        # The report must come from the box, be about that box, and be written to that same row (by id, never
+        # re-matched by serial): a serial already on another row is a claim on someone else's device.
+        other = ctx.db.find(serial=serial) if serial else None
+        if dev and _own(ctx.db, dev, request, strict=True) and dev["serial"] in (None, serial)                 and (other is None or other["id"] == dev["id"]):
             facts = parse_show_version(data.get("version", ""))  # may itself contain serial/hostname
             facts.pop("hostname", None)
-            ctx.db.upsert(ip=request.client.host, **{**facts, "serial": serial})
+            ctx.db.update(dev["id"], **{**facts, "serial": serial, "ip": request.client.host})
             if dev["state"] == "provisioning":
                 ctx.finish(dev["id"], "ztp", bool(data.get("ok")), data.get("error") or "ZTP applied + saved")
             ctx.emit("device", ctx.db.device(dev["id"]))

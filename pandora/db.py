@@ -139,6 +139,14 @@ class DB:
                 row = self.set_state(row["id"], "identified")
             return row
 
+    def update(self, device_id, **facts) -> dict:
+        """Write facts to this exact row (no matching): for reports already checked against that row."""
+        facts = {k: v for k, v in facts.items() if k in FIELDS and v not in (None, "")}
+        if facts:
+            sets = ", ".join(f"{k}=?" for k in facts)
+            self.x(f"UPDATE devices SET {sets}, updated=? WHERE id=?", *facts.values(), time.time(), device_id)
+        return self.device(device_id)
+
     def set_state(self, device_id, state, note=None):
         assert state in STATES, state
         self.x("UPDATE devices SET state=?, note=coalesce(?, note), updated=? WHERE id=?",
