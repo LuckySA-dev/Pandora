@@ -835,6 +835,33 @@ def main():
         assert not any(x["key"] == "ssh-host-key" for x in c.get("/api/problems").json())
         return "changed key refused, problem raised, re-pinned after forget"
 
+    @check("SSH host key: a box claiming a known serial from a new address with another key is refused; row untouched")
+    def _():
+        import copy
+
+        from pandora import alerts, hostkeys
+        p = ids["pnp"]
+        before = ctx.db.device(p)
+        box = REGISTRY[before["ip"]]
+        used = {d["ip"] for d in ctx.db.devices()} | {a["mgmt_ip"] for a in ctx.db.q("SELECT mgmt_ip FROM allocations")}
+        new_ip = next(f"127.0.0.{i}" for i in range(40, 1, -1) if f"127.0.0.{i}" not in REGISTRY.keys() | used)
+        impostor = copy.copy(box)  # same serial and login, its own key
+        impostor.hostkey = paramiko.RSAKey.generate(2048)
+        REGISTRY[new_ip] = impostor
+        try:
+            r = c.post("/api/devices", json={"ip": new_ip, "username": ctx.cfg["admin_user"],
+                                             "password": SECRETS["admin_password"]})
+            assert r.status_code == 502 and "HostKeyChanged" in r.text, r.text
+            after = ctx.db.device(p)
+            assert (after["ip"], after["path"]) == (before["ip"], before["path"]), (before, after)
+            assert not ctx.db.find(ip=new_ip), "a row was created for the impostor"
+            assert hostkeys.pinned(ctx.db, p) == hostkeys.text(box.hostkey)
+            assert any(x["key"] == "ssh-host-key" and x["device_id"] == p for x in c.get("/api/problems").json())
+        finally:
+            del REGISTRY[new_ip]
+            alerts.resolve(ctx, p, "ssh-host-key")
+        return f"{new_ip} claimed serial {before['serial']}: refused, device stays on {before['ip']}"
+
     # ---- summary --------------------------------------------------------------------------------
     ok = sum(1 for r in RESULTS if r[0])
     print(f"\n{ok}/{len(RESULTS)} checks passed  (work dir {work})", flush=True)

@@ -228,6 +228,7 @@ def main():
     print(f"\n{ok}/{len(RESULTS)} checks passed against containerlab IOL ({lab['name']})", flush=True)
     if serve:
         print(f"UI on http://localhost:{PORT} (from Windows too)", flush=True)
+        threading.Thread(target=lambda: asyncio.run(monitor.poll_forever(ctx)), daemon=True).start()  # live UI
         threading.Event().wait()
     return 0 if ok == len(RESULTS) else 1
 
@@ -339,7 +340,9 @@ def mgmt_checks(ctx, lab, ids):
         got = []
 
         async def start():
-            return snmp.start_receiver(ctx.cfg, lambda src, name, vbs: got.append((src, name)))
+            # informs also go to the UI's trap list and problems (--serve leaves the UI up afterwards)
+            return snmp.start_receiver(ctx.cfg, lambda src, name, vbs: (got.append((src, name)),
+                                                                        monitor.on_trap(ctx, src, name, vbs)))
         asyncio.run_coroutine_threadsafe(start(), loop).result(10)
         # IOL has no spare cabled port on every node: a loopback that comes up and is shut sends linkUp/linkDown
         # like a port, without touching the management path (removed again afterwards)

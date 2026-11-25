@@ -45,7 +45,7 @@ Real-device findings fixed (containerlab IOL, IOS-XE 17.18.2)
 Verification (all green on 2026-11-25)
 - [x] `python -m pytest` → 48 passed
 - [x] `python -m pandora --preflight` checks a laptop for a real run (secrets, NIC, ports 67/69/162/80, ranges, Npcap, firewall, consoles, SNMP AES, agent)
-- [x] `python scripts/mvp_check.py` (simulated lab, port 8097 since the small lab publishes 8099) → 24/24 (incl. SSH host-key impostor check)
+- [x] `python scripts/mvp_check.py` (simulated lab, port 8097 since the small lab publishes 8099) → 25/25 (incl. SSH host-key impostor checks: changed key at the same address; a known serial claimed from a new address with another key)
 - [x] `scripts/clab_check.py` on `lab/small.clab.yml` (real IOL, day-2) → 9/9
 - [x] `scripts/ztp_check.py` on `lab/ztp.clab.yml` (factory-blank IOL: DHCP, PnP, AutoInstall, completion over SSH, console) → 6/6
 - [x] `scripts/clab_check.py lab/medium.clab.yml` (12 real IOL, parallel) → 16/16 incl. management design + its compliance, SNMPv3 informs from all 12 nodes, retiring the old addresses
@@ -95,7 +95,7 @@ Verification (all green on 2026-11-25)
 | `lab/medium.clab.yml` | pandora + r1/r2 + d1/d2 + a1-a8, mgmt 172.30.32.0/24 | `docker exec clab-pandora-medium-pandora python scripts/clab_check.py lab/medium.clab.yml` | scale run; same checks as small |
 | `lab/large.clab.yml` | pandora + r1/r2 + d1-d4 + a1-a34, mgmt 172.30.33.0/24 | `docker exec clab-pandora-large-pandora python scripts/clab_check.py lab/large.clab.yml` | 40 IOL, ~6 GB; 16/16 incl. the design with 4 backbones |
 
-Running now (2026-11-25): only the large lab is up (~6 GB; small, medium and ztp were destroyed; redeploy as needed). Destroy with `CLAB_LABDIR_BASE=$HOME/clab containerlab destroy -t lab/<x>.clab.yml --cleanup`.
+Running now (2026-11-26): the medium lab is up **with the UI on http://localhost:8099** (it publishes 8099; `clab_check.py lab/medium.clab.yml --serve` keeps the UI and SNMP polling running after the checks, informs land in the UI). Small, ztp and large were destroyed; redeploy as needed. After the security fixes (fadd276) both medium and large were re-run fresh: 16/16 each. Destroy with `CLAB_LABDIR_BASE=$HOME/clab containerlab destroy -t lab/<x>.clab.yml --cleanup`.
 
 How the blank IOL boxes work (`lab/ztp/blank.sh`): plain `linux` nodes running the IOL image with no `-c` config (an empty config file counts as a broken startup-config and stops AutoInstall), fresh NVRAM, IOL e0/0 = eth1, console = `script` pty dialled into `lab/ztp/console_relay.py` (ports 70NN device side, `socket://127.0.0.1:50NN` client side, log in `/tmp/console-NN.log`). The vrnetlab entrypoint is skipped because it flushes eth0, which carries the console.
 

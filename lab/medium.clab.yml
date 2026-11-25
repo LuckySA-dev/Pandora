@@ -26,6 +26,8 @@ topology:
       mgmt-ipv4: 172.30.32.2
       binds:
         - /mnt/c/Users/User/Desktop/Coding/Pandora:/app
+      ports:
+        - 8099:8099   # the UI from Windows: clab_check.py lab/medium.clab.yml --serve
       exec:
         - ip addr add 10.99.0.1/24 dev eth1   # the PC's single LAN card, in d1's reserved mgmt port (VLAN 99)
     r1: {mgmt-ipv4: 172.30.32.11}
