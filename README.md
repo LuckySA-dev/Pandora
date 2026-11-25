@@ -116,6 +116,6 @@ What real IOS-XE 17.18 (IOL) taught us, now handled in the code:
 - IOS hides defaults (`no shutdown`, `ip ssh version 2`), widens trap lists and keeps VLANs in vlan.dat under VTP server: compliance accounts for all of these.
 - Not testable on IOL: ZTP (no Guest Shell; needs Cat8000v/Cat9000v), DHCP from the L2 image (its AutoInstall loop never sends DHCP), SNMP informs (the lab reaches devices through containerlab's mgmt VRF).
 
-`python -m ruff check pandora tests scripts` runs the lint rules in `pyproject.toml`. `mvp_check.py` needs `pip install snmpsim pysmi`; add `--serve` to keep the simulated lab and the UI up on http://127.0.0.1:8099.
+`python -m ruff check pandora tests scripts` runs the lint rules in `pyproject.toml`. `mvp_check.py` needs `pip install snmpsim pysmi`; add `--serve` to keep the simulated lab and the UI up on http://127.0.0.1:8097.
 
 Known limits: IOS/IOS-XE only (no NX-OS POAP / XR). PnP doesn't do image upgrades. DHCP doesn't support relays (giaddr). The UI needs no internet: fonts and xterm.js are vendored in `pandora/web/vendor/` (`scripts/vendor_web.py` refreshes them).

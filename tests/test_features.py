@@ -271,6 +271,8 @@ def _campus(ctx):
     ctx.preview(list(ids.values()), ports={str(i): "Ethernet0/3" if n != "d1" else "Ethernet1/3" for n, i in ids.items()})
     for i in ids.values():
         ctx.db.set_state(i, "provisioned")
+    for n in ("d1", "d2"):  # the two L3 switches (as the SSH probe records it)
+        ctx.db.set_vars(ids[n], {**ctx.db.vars(ids[n]), "cap_ip_routing": True})
 
     def e(a, pa, b, pb):
         return {"from": ids[a], "to": ids[b], "from_port": pa, "to_port": pb}
@@ -354,3 +356,19 @@ def test_compliance_checks_the_management_design_as_ios_prints_it():
     assert not f["mgmt-design"] and "ip routing" in r["remediation"]
     r, f = check(base + trunk + " switchport trunk allowed vlan remove 99\n")  # not a form IOS prints: not trusted
     assert not f["mgmt-design"]
+
+
+def test_backbone_must_be_an_l3_switch(ctx):
+    from pandora import mgmt
+    from pandora.deliver import parse_caps
+    assert parse_caps("", "", "", "ip routing ?\n  <cr>  <cr>\n") == {"cap_ip_routing": True}  # IOL / Cat9k
+    assert parse_caps("", "", "", "ip routing ?\n% Unrecognized command\n") == {"cap_ip_routing": False}
+    assert parse_caps("", "", "", "") == {}  # unreadable help: unknown, never guessed
+    ids, edges = _campus(ctx)
+    dom = [{"backbone": ids["a2"], "vlan": 10, "subnet": "10.10.0.0/24"}]
+    ctx.db.set_vars(ids["a2"], {**ctx.db.vars(ids["a2"]), "cap_ip_routing": False})  # a 2960 LAN Base, say
+    p = mgmt.plan(ctx, dom, {}, edges)
+    assert not p["ok"] and any("layer-2-only" in x for x in p["problems"])
+    ctx.db.set_vars(ids["a2"], {k: v for k, v in ctx.db.vars(ids["a2"]).items() if k != "cap_ip_routing"})
+    p = mgmt.plan(ctx, dom, {}, edges)  # never probed and no answer: blocked, not assumed
+    assert not p["ok"] and any("could not check" in x for x in p["problems"])

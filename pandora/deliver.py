@@ -310,10 +310,10 @@ class NeedCredentials(Exception):
     pass
 
 
-CAP_QUESTIONS = ("line vty 0", "snmp-server group PANDORA v3", "snmp-server enable traps")  # each + " ?"
+CAP_QUESTIONS = ("line vty 0", "snmp-server group PANDORA v3", "snmp-server enable traps", "ip routing")  # + " ?"
 
 
-def parse_caps(vty_help: str, group_help: str, traps_help: str) -> dict:
+def parse_caps(vty_help: str, group_help: str, traps_help: str, routing_help: str = "") -> dict:
     """IOS `?` help -> template caps. Seen on containerlab IOL 17.18: vty only 0-4, the L2 image offers no
     'priv' (no AES), the router image no 'traps config'. Help we can't read keeps the default."""
     caps = {}
@@ -323,4 +323,10 @@ def parse_caps(vty_help: str, group_help: str, traps_help: str) -> dict:
         caps["cap_snmp_priv"] = bool(re.search(r"^\s+priv\s", group_help, re.M))
     if re.search(r"^\s+\S+\s+Enable ", traps_help, re.M):
         caps["cap_traps_config"] = bool(re.search(r"^\s+config\s", traps_help, re.M))
+    # an L3-capable image offers `ip routing <cr>`; an L2-only one (e.g. 2960 LAN Base) doesn't know the command.
+    # Only a management backbone needs it (mgmt.plan).
+    if "<cr>" in routing_help:
+        caps["cap_ip_routing"] = True
+    elif re.search(r"% (Invalid input|Unrecognized command)", routing_help):
+        caps["cap_ip_routing"] = False
     return caps

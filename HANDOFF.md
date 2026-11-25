@@ -45,7 +45,7 @@ Real-device findings fixed (containerlab IOL, IOS-XE 17.18.2)
 Verification (all green on 2026-11-25)
 - [x] `python -m pytest` → 40 passed
 - [x] `python -m pandora --preflight` checks a laptop for a real run (secrets, NIC, ports 67/69/162/80, ranges, Npcap, firewall, consoles, SNMP AES, agent)
-- [x] `python scripts/mvp_check.py` (simulated lab) → 23/23
+- [x] `python scripts/mvp_check.py` (simulated lab, port 8097 since the small lab publishes 8099) → 23/23
 - [x] `scripts/clab_check.py` on `lab/small.clab.yml` (real IOL, day-2) → 9/9
 - [x] `scripts/ztp_check.py` on `lab/ztp.clab.yml` (factory-blank IOL: DHCP, PnP, AutoInstall, console) → 5/5
 - [x] `scripts/clab_check.py lab/medium.clab.yml` (12 real IOL, parallel) → 14/14 incl. management design + its compliance
@@ -57,8 +57,8 @@ Verification (all green on 2026-11-25)
   - [x] compliance checks the design: `mgmt_config` stores what apply pushed per device (incl. per-port dot1q/native extras); `compliance.run` adds it to the intended config as feature **mgmt-design**, with IOS display rules (no allowed-VLAN list = all; split `allowed vlan` + `add` lines; `ip routing` hidden when default; design VLANs read from vlan.dat). Proven: medium lab 14/14 (twice), an edited domain SVI on a1 is flagged as mgmt-design and fixed by remediation. Security review: reserved ports/ops VLAN keep their strict feature even if a design line named them; only canonical `allowed vlan` forms are trusted; `ip routing` counts as held unless the box shows `no ip routing`
   - [ ] SSH through the domain address is slow to connect in the lab (the drift check took 35-90 s vs 15 s on the clab address): look at it on real gear before blaming the code
   - lesson: the lab's drift test must not cut its own management path (removing the member's gateway made it depend on ARP over VLAN 99 and failed once in three runs)
-  - by design (user confirmed): **a backbone is always an L3 switch**, never a router; routers only join as members (dot1Q subinterface on their uplink). The wizard offers only switches, and `mgmt.plan` refuses a router backbone
-  - [ ] not yet: removing the old VLAN 99 addresses is left to the operator; an L2 path through a router is refused (cable members to switches); an L2-only switch picked as backbone is only caught when `ip routing` fails at apply
+  - by design (user confirmed): **a backbone is always an L3 switch**, never a router; routers only join as members (dot1Q subinterface on their uplink). The wizard offers only switches, and `mgmt.plan` refuses a router backbone. It also refuses a **layer-2-only switch**: the image's own `ip routing ?` help is part of the capability probe (`cap_ip_routing`, recorded at SSH/console pre-config; `mgmt.ensure_caps` asks PnP/AutoInstall boxes over SSH at Review), and a backbone that can't be asked is blocked, not assumed
+  - [ ] not yet: removing the old VLAN 99 addresses is left to the operator; an L2 path through a router is refused (cable members to switches)
 
 ## Not done / next
 

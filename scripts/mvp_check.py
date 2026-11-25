@@ -1,7 +1,7 @@
 """End-to-end MVP check against a simulated lab (no Cisco hardware needed).
 
     python scripts/mvp_check.py            # run every check, print PASS/FAIL
-    python scripts/mvp_check.py --serve    # then keep the lab + UI up on http://127.0.0.1:8099
+    python scripts/mvp_check.py --serve    # then keep the lab + UI up on http://127.0.0.1:8097
 
 Fakes: IOS / IOS-XE devices over SSH (paramiko) and over a fake COM port, an SNMPv3 agent (snmpsim).
 Real: the PandoraBox app over HTTP, PnP/ZTP over HTTP, AutoInstall over TFTP, DHCP decisions, netmiko,
@@ -37,7 +37,7 @@ from pandora.db import DB  # noqa: E402
 from pandora.deliver import Ctx  # noqa: E402
 from pandora.net import dhcp, tftp  # noqa: E402
 
-PORT = 8099
+PORT = 8097  # not 8099: the containerlab small lab publishes its PandoraBox container there (WSL relay)
 BASE = f"http://127.0.0.1:{PORT}"
 SECRETS = {"admin_password": "Adm1nPass!", "snmp_auth": "AuthKey123", "snmp_priv": "PrivKey123"}
 REGISTRY: dict[str, "FakeIOS"] = {}  # ip -> device answering SSH there

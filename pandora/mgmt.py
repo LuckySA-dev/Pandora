@@ -78,6 +78,19 @@ def suggest(devices, backbones, edges) -> dict:
     return {n: b for n, (b, _) in best.items()}
 
 
+def ensure_caps(ctx, ids) -> None:
+    """Backbones must route. Boxes pre-configured over SSH/console were already asked (cap_ip_routing); a PnP or
+    AutoInstall box never was: ask it now, over SSH. A box that doesn't answer stays unknown (plan says so)."""
+    for i in ids:
+        if "cap_ip_routing" in ctx.db.vars(i):
+            continue
+        try:
+            _, caps = ctx.probe(ctx.db.device(i))
+            ctx.db.set_vars(i, {**ctx.db.vars(i), **caps})
+        except Exception as e:
+            log.info("capability probe of device %s failed: %s", i, e)
+
+
 def plan(ctx, domains: list[dict], members: dict, edges: list[dict]) -> dict:
     """domains: [{backbone, vlan, subnet}], members: {device_id: backbone_id}. Nothing is pushed here."""
     cfg, db = ctx.cfg, ctx.db
@@ -107,6 +120,10 @@ def plan(ctx, domains: list[dict], members: dict, edges: list[dict]) -> dict:
             problems.append(f"{name(b)} is an edge router: a backbone must be an L3 switch (VLANs + SVIs)")
         elif not ops_ip(b):
             problems.append(f"{name(b)} has no address in the management VLAN {ops_vlan}")
+        elif (l3 := db.vars(b).get("cap_ip_routing")) is False:
+            problems.append(f"{name(b)} is a layer-2-only switch (its IOS has no `ip routing`): pick an L3 switch")
+        elif l3 is None:
+            problems.append(f"could not check whether {name(b)} can route (no SSH answer): check it, then try again")
         if not 2 <= vlan <= 4094 or vlan == ops_vlan or vlan in {x["vlan"] for x in dom.values()}:
             problems.append(f"{name(b)}: VLAN {vlan} is not free (1, {ops_vlan} and the other domains' VLANs are taken)")
         if any(net.overlaps(n) for n in seen_nets):

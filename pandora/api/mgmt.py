@@ -13,6 +13,11 @@ def router(ctx) -> APIRouter:
     async def edges():  # always fresh: trunks are chosen from the cabling as it is now
         return (await topology.collect(ctx))["edges"]
 
+    def backbones(body):  # only real, known device ids: the probe logs in to them
+        known = {d["id"] for d in ctx.db.devices()}
+        return [int(d["backbone"]) for d in body.get("domains", []) if str(d.get("backbone", "")).isdigit()
+                and int(d["backbone"]) in known]
+
     @r.get("")
     def current():
         return {**mgmt.current(ctx.db), "ops_subnet": str(mgmt.ops_net(ctx.cfg)), "ops_vlan": ctx.cfg["mgmt_vlan"],
@@ -28,12 +33,14 @@ def router(ctx) -> APIRouter:
     @r.post("/plan")
     async def plan(body: dict):
         e = await edges()
+        await asyncio.to_thread(mgmt.ensure_caps, ctx, backbones(body))
         return await asyncio.to_thread(mgmt.plan, ctx, body.get("domains", []), body.get("members", {}), e)
 
     @r.post("/apply")
     async def apply(body: dict):
         # the plan is made again here from the cabling and inventory: lines from the browser are never pushed
         e = await edges()
+        await asyncio.to_thread(mgmt.ensure_caps, ctx, backbones(body))
         p = await asyncio.to_thread(mgmt.plan, ctx, body.get("domains", []), body.get("members", {}), e)
         if not p["ok"]:
             return JSONResponse({"error": "; ".join(p["problems"]), "plan": p}, 400)

@@ -257,6 +257,9 @@ def mgmt_checks(ctx, lab, ids):
 
     @check("management design: plan has no problems (domains, trunks from CDP, router subinterfaces)")
     def _():
+        mgmt.ensure_caps(ctx, list(bb))  # what the API does before a plan
+        l3 = {b: ctx.db.vars(b).get("cap_ip_routing") for b in bb}
+        assert all(v is True for v in l3.values()), f"backbones not recognised as L3 switches: {l3}"
         doms = [{"backbone": b, "vlan": int(v[0]), "subnet": v[1]} for b, v in bb.items()]
         st["plan"] = p = mgmt.plan(ctx, doms, st["members"], st["edges"])
         assert p["ok"], p["problems"]
