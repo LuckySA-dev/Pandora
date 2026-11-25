@@ -123,6 +123,11 @@ class Ctx:
             facts = parse_show_version(conn.send_command("show version"))
             facts.update({k: v for k, v in parse_inventory(conn.send_command("show inventory")).items() if v})
         hostname = facts.pop("hostname", None)
+        # Known by serial at a new address: its identity is known only now. Check the pin before anything about
+        # that device changes (address, path, credentials): a box claiming its serial with another key gets nothing.
+        same = self.db.find(serial=facts.get("serial"), ip=ip)
+        if same and pin.seen and (want := hostkeys.pinned(self.db, same["id"])) and want != pin.seen:
+            raise hostkeys.HostKeyChanged(hostkeys.mismatch(self, same["id"], ip, " (added by IP)"))
         dev = self.db.upsert(ip=ip, source="ssh", path="ssh", hostname=hostname, **facts)
         if dev["path"] != "ssh":
             self.db.x("UPDATE devices SET path='ssh' WHERE id=?", dev["id"])
@@ -152,7 +157,8 @@ class Ctx:
         text, problems, _ = self.render(dev["id"], factory=True, autosave=method == "autoinstall")
         if problems:
             return None
-        hostkeys.forget(self, dev["id"], f"{method}: factory config (new RSA key) sent")
+        if client_ip:  # actually handed to the box at its own address (not PnP's "would there be a file?" check)
+            hostkeys.forget(self, dev["id"], f"{method}: factory config (new RSA key) sent", resolve=False)
         return text
 
     def dhcp_decide(self, mac, info, ip):
@@ -272,7 +278,8 @@ class Ctx:
             # Factory = no startup-config. The dialog/AutoInstall banner may have scrolled by long before we came.
             con.factory = con.factory or "not present" in con.send("show startup-config", 2)
             if con.factory:
-                hostkeys.forget(self, dev["id"], "console: factory box, pre-config generates a new RSA key")
+                hostkeys.forget(self, dev["id"], "console: factory box, pre-config generates a new RSA key",
+                                resolve=False)
             self.db.set_vars(dev["id"], {**self.db.vars(dev["id"]), **parse_caps(*map(con.ask, CAP_QUESTIONS))})
             # Factory = the console showed the setup/autoinstall dialog. A configured box that merely
             # has no login must keep its Vlan1 and keys.

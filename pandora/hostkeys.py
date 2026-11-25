@@ -29,10 +29,19 @@ def remember(db, device_id, key_text):
     db.x("INSERT OR IGNORE INTO host_keys (device_id, key, ts) VALUES (?,?,?)", device_id, key_text, time.time())
 
 
-def forget(ctx, device_id, why):
+def forget(ctx, device_id, why, resolve=True):
+    """resolve: only the user's explicit "Trust new key" closes an open key-changed problem."""
     if ctx.db.x("DELETE FROM host_keys WHERE device_id=?", device_id).rowcount:
         ctx.db.audit("system", "host_key:forget", {"id": device_id, "why": why})
-    alerts.resolve(ctx, device_id, PROBLEM)
+    if resolve:
+        alerts.resolve(ctx, device_id, PROBLEM)
+
+
+def mismatch(ctx, device_id, where, detail=""):
+    msg = (f"SSH host key of {where} changed{detail}: refused. If the box was replaced or reset, "
+           "forget its key on the device page.")
+    alerts.raise_(ctx, device_id, PROBLEM, "high", msg)
+    return msg
 
 
 class Pin(paramiko.MissingHostKeyPolicy):
@@ -50,7 +59,5 @@ class Pin(paramiko.MissingHostKeyPolicy):
             remember(self.ctx.db, self.device_id, self.seen)
             self.ctx.db.audit("system", "host_key:pin", {"id": self.device_id, "ip": hostname})
         elif want != self.seen:
-            msg = (f"SSH host key of {hostname} changed ({key.get_name()} {key.get_fingerprint().hex(':')}): "
-                   "refused. If the box was replaced or reset, forget its key on the device page.")
-            alerts.raise_(self.ctx, self.device_id, PROBLEM, "high", msg)
-            raise HostKeyChanged(msg)
+            raise HostKeyChanged(mismatch(self.ctx, self.device_id, hostname,
+                                          f" ({key.get_name()} {key.get_fingerprint().hex(':')})"))
