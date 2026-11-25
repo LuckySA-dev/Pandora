@@ -1,0 +1,2 @@
+# LF everywhere: lab/*.sh and the clab files run inside Linux containers through a bind mount
+* text=auto eol=lf
