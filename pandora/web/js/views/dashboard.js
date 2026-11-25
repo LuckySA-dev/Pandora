@@ -11,7 +11,9 @@ const COLUMNS = [
   { key: "name", label: "Device", sort: "name", render: (d) => html`<a href="#/devices/${d.id}">${deviceName(d)}</a><div class="sub">${d.pid || "model unknown"}</div>` },
   { key: "state", label: "State", sort: "state", render: (d) => stateBadge(d.state) },
   { key: "severity", label: "Problems", sort: "severity", render: (d) => (d.severity ? html`<span class="sev-pill sev-${d.severity}">${d.severity}</span>` : html`<span class="muted">none</span>`) },
-  { key: "ip", label: "Management IP", sort: "ip", render: (d) => d.mgmt_ip || d.ip || html`<span class="muted">none yet</span>` },
+  // the address PandoraBox reaches it on now (after a management design that is the domain address, not the
+  // pre-config one, which may have been retired)
+  { key: "ip", label: "Management IP", sort: "ip", render: (d) => d.ip || d.mgmt_ip || html`<span class="muted">none yet</span>` },
   { key: "ports", label: "Links up", sort: "ports", render: (d) => (d.ports_total
     ? html`<span class="ports-up">${d.ports_up}/${d.ports_total}</span><span class="ports-bar" aria-hidden="true"><span style="width:${Math.round((100 * d.ports_up) / d.ports_total)}%"></span></span>`
     : html`<span class="muted">not polled</span>`) },
@@ -27,8 +29,13 @@ export async function mount(root) {
     <div><h1>Bench</h1><p class="lede" id="bench-lede">&nbsp;</p></div>
     <div class="actions"><a class="btn primary" href="#/devices">Onboard devices</a></div>
   </div>
-  <section class="panel" id="bench" aria-label="Devices on the bench"></section>
-  <div id="summary"></div>`);
+  <div class="bench-layout">
+    <div class="grid">
+      <section class="panel" id="bench" aria-label="Devices on the bench"></section>
+      <section class="panel" id="activity"></section>
+    </div>
+    <aside class="grid" id="summary" aria-label="Problems, onboarding and health"></aside>
+  </div>`);
 
   const grid = createGrid(root.querySelector("#bench"), COLUMNS, {
     url: "/api/devices", storageKey: "pandora.bench", sort: "severity", order: "asc",
@@ -44,18 +51,39 @@ export async function mount(root) {
       : "Nothing found yet. Plug a switch into the provisioning port or a console cable.";
     const box = root.querySelector("#summary");
     if (box) render(box, view(dash, open));
+    const act = root.querySelector("#activity");
+    if (act) render(act, activity(dash));
   };
   await Promise.all([grid.load(), summary()]);
 
-  let t;
+  // Live updates touch one row in O(1) (grid.patch); only changes that can reorder the table or move the
+  // totals (problems, compliance, a device that is not on this page) reload it, debounced.
+  let t, s;
   const later = () => { clearTimeout(t); t = setTimeout(() => { grid.reload(); summary(); }, 500); };
-  const offs = ["device", "problem", "compliance", "snmp"].map((k) => on(k, later));
-  return () => { offs.forEach((f) => f()); clearTimeout(t); };
+  const totals = () => { s ||= setTimeout(() => { s = 0; summary(); }, 5000); }; // at most every 5 s
+  const offs = [
+    on("snmp", ({ id, ts, sample }) => {
+      let up = 0, total = 0;
+      for (const k in sample) if (k.endsWith(":oper")) { total += 1; up += sample[k] === "up"; }
+      grid.patch(id, { ports_up: up, ports_total: total, polled: ts });
+      totals();
+    }),
+    on("device", (d) => { if (!grid.patch(d.id, d)) later(); else totals(); }),
+    on("problem", later),
+    on("compliance", later),
+  ];
+  return () => { offs.forEach((f) => f()); clearTimeout(t); clearTimeout(s); };
+}
+
+function activity(dash) {
+  return html`<h2>Recent activity</h2>
+    <table class="table" style="margin-top:6px"><tbody>
+      ${dash.events.map((e) => html`<tr><td class="sub" style="width:120px">${ago(e.ts)}</td><td>${describe(e)}</td></tr>`)}
+    </tbody></table>`;
 }
 
 function view(dash, open) {
   return html`
-  <div class="grid cols-dash" style="margin-top:16px">
     <section class="panel">
       <div class="panel-head"><h2>Problems</h2><a class="more" href="#/problems">All problems</a></div>
       ${open ? html`<div class="sevbar" role="img" aria-label="Open problems by severity">
@@ -68,7 +96,6 @@ function view(dash, open) {
           <span class="sev-pill sev-${p.severity}">${p.severity}</span></div>`)
         : html`<p class="muted">All clear. Problems appear here when a port goes down, CPU runs hot, a device stops answering or its config drifts.</p>`}
     </section>
-    <div class="grid">
       <section class="panel">
         <h2>Onboarding</h2>
         <div class="pipeline" style="margin-top:10px">
@@ -85,15 +112,7 @@ function view(dash, open) {
           <dt>Config compliant</dt><dd>${dash.compliance.compliant}${dash.compliance.drift ? html`, <a href="#/problems">${dash.compliance.drift} drifted</a>` : ""}${dash.compliance.unchecked ? `, ${dash.compliance.unchecked} not checked yet` : ""}</dd>
           ${dash.top_cpu.length ? html`<dt>Busiest CPU</dt><dd>${dash.top_cpu.map((c, i) => html`${i ? ", " : ""}<a href="#/devices/${c.id}">${c.hostname}</a> ${c.cpu}%`)}</dd>` : ""}
         </dl>
-      </section>
-    </div>
-  </div>
-  <section class="panel" style="margin-top:16px">
-    <h2>Recent activity</h2>
-    <table class="table" style="margin-top:6px"><tbody>
-      ${dash.events.map((e) => html`<tr><td class="sub" style="width:120px">${ago(e.ts)}</td><td>${describe(e)}</td></tr>`)}
-    </tbody></table>
-  </section>`;
+      </section>`;
 }
 
 function describe(e) {

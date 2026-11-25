@@ -83,10 +83,12 @@ def router(ctx):
         worst = alerts.worst(ctx.db)
         for n in g["nodes"]:
             n["severity"] = worst.get(n["id"]) if isinstance(n["id"], int) else None
+        down = {}  # per device, built once: O(links + ports), not O(links x ports)
         for e in g["edges"]:
-            last = monitor.LAST.get(e["from"], {}) if isinstance(e["from"], int) else {}
-            down = {normalize_if(k[:-5]) for k, v in last.items() if k.endswith(":oper") and v == "down"}
-            e["down"] = normalize_if(e.get("from_port", "")) in down
+            if e["from"] not in down:
+                last = monitor.LAST.get(e["from"], {}) if isinstance(e["from"], int) else {}
+                down[e["from"]] = {normalize_if(p) for p in last.get("_down", ())}
+            e["down"] = normalize_if(e.get("from_port", "")) in down[e["from"]]
         return g
 
     return r

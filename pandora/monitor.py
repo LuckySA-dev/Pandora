@@ -16,10 +16,20 @@ LAST: dict[int, dict] = {}  # device_id -> last SNMP sample (for "went down" tra
 
 async def poll_one(ctx, d) -> dict:
     sample, now = await snmp.poll(d["ip"], snmp.auth(ctx.cfg, dev=d)), time.time()
-    for k, v in sample.items():
-        ctx.db.x("INSERT INTO snmp_samples VALUES (?,?,?,?)", d["id"], now, k, v)
+    with ctx.db.lock:  # one transaction per poll, not one commit per value
+        ctx.db.conn.execute("BEGIN")
+        try:
+            ctx.db.conn.executemany("INSERT INTO snmp_samples VALUES (?,?,?,?)",
+                                    [(d["id"], now, k, v) for k, v in sample.items()])
+        except Exception:
+            ctx.db.conn.execute("ROLLBACK")
+            raise
+        ctx.db.conn.execute("COMMIT")
     alerts.on_sample(ctx, d, sample, LAST.get(d["id"]))
-    LAST[d["id"]] = {**sample, "_ts": now}
+    down = {k[:-5] for k, v in sample.items() if k.endswith(":oper") and v == "down"}
+    total = sum(k.endswith(":oper") for k in sample)
+    # counted once per poll, so every inventory request reads them in O(1) per row
+    LAST[d["id"]] = {**sample, "_ts": now, "_up": total - len(down), "_total": total, "_down": down}
     ctx.emit("snmp", {"id": d["id"], "ts": now, "sample": sample})
     return sample
 

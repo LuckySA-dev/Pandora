@@ -3,6 +3,7 @@ import csv
 import io
 import ipaddress
 import json
+from collections import Counter
 
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
@@ -36,7 +37,7 @@ SORTS = {
     "state": lambda d: _STATE.get(d["state"], 99),
     "severity": lambda d: -_SEV.get(d.get("severity") or "", -1),
     "pid": lambda d: (d.get("pid") or "~").lower(),
-    "ip": lambda d: _ip_key(d.get("mgmt_ip") or d.get("ip") or ""),
+    "ip": lambda d: _ip_key(d.get("ip") or d.get("mgmt_ip") or ""),  # the address in use, as the Bench shows it
     "path": lambda d: d.get("path") or "~",
     "role": lambda d: d.get("role") or "~",
     "ports": lambda d: -(d.get("ports_up") or 0),
@@ -55,9 +56,8 @@ def device_rows(ctx, q="", **filters):
         if q and not any(q.lower() in str(d.get(k) or "").lower() for k in SEARCH):
             continue
         last = monitor.LAST.get(d["id"], {})
-        opers = [v for k, v in last.items() if k.endswith(":oper")]
         d.update(severity=worst.get(d["id"]), compliant=comp.get(d["id"]), polled=last.get("_ts"),
-                 ports_up=sum(v == "up" for v in opers), ports_total=len(opers))
+                 ports_up=last.get("_up", 0), ports_total=last.get("_total", 0))
         rows.append(d)
     return rows
 
@@ -88,7 +88,7 @@ def router(ctx):
         if page is None:
             return rows
         out = paginate(rows, page, per_page)
-        out["states"] = {s: sum(d["state"] == s for d in base) for s in {d["state"] for d in base}}
+        out["states"] = dict(Counter(d["state"] for d in base))
         return out
 
     @r.post("/devices")
@@ -119,9 +119,9 @@ def router(ctx):
     def device(device_id: int):
         if err := missing(device_id):
             return err
-        d = next(x for x in ctx.db.devices() if x["id"] == device_id)
+        d = ctx.db.devices(device_id)[0]
         last = monitor.LAST.get(device_id, {})
-        ifaces = sorted({k.rsplit(":", 1)[0] for k in last if ":" in k})
+        ifaces = sorted({k[:-5] for k in last if k.endswith(":oper")})
         return {
             "device": d,
             "interfaces": [{"name": i, "oper": last.get(f"{i}:oper"), "in": last.get(f"{i}:in"),

@@ -29,7 +29,7 @@ export function createGrid(el, columns, opts) {
   const saved = store.get(`${opts.storageKey}.grid`, {});
   const st = { q: opts.q || "", sort: saved.sort || opts.sort || "", order: saved.order || opts.order || "asc",
     page: 1, per_page: saved.per_page || 20, data: null, loading: false };
-  let seq = 0, timer;
+  let seq = 0, timer, rows = new Map(); // id -> row on this page: a live update finds its row in O(1)
 
   async function load() {
     const mine = ++seq;
@@ -38,6 +38,7 @@ export function createGrid(el, columns, opts) {
       page: st.page, per_page: st.per_page });
     if (mine !== seq) return; // a newer search already answered
     st.data = data; st.page = data.page; st.loading = false;
+    rows = new Map(data.items.map((r) => [r.id, r]));
     opts.onData?.(data);
     draw();
   }
@@ -97,5 +98,15 @@ export function createGrid(el, columns, opts) {
     if (row && !e.target.closest("input,select,button,a,label")) location.hash = row.dataset.href;
   });
 
-  return { load, reload: () => load(), state: st, redraw: draw };
+  /** Merge fields into the row with this id if it is on the page; false = not shown here (caller may reload). */
+  function patch(id, fields) {
+    const row = rows.get(id);
+    if (!row) return false;
+    Object.assign(row, fields);
+    frame ||= requestAnimationFrame(() => { frame = 0; draw(); }); // a burst of updates paints once
+    return true;
+  }
+  let frame = 0;
+
+  return { load, reload: () => load(), state: st, redraw: draw, patch };
 }

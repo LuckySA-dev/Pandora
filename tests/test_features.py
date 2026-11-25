@@ -388,3 +388,12 @@ def test_retired_ops_address_is_what_compliance_expects(ctx):
     text, _, _ = ctx.render(d["id"])
     assert f"interface Vlan{ctx.cfg['mgmt_vlan']}\n description PANDORA-MGMT\n no ip address\n" in text
     assert a["mgmt_ip"] not in text
+
+
+def test_topology_keeps_cables_and_drops_a_shared_segment():
+    from pandora.topology import point_to_point
+    e = lambda a, ap, b, bp: {"from": a, "from_port": ap, "to": b, "to_port": bp}  # noqa: E731
+    cable = e(1, "Et0/1", 2, "Et0/1")
+    mesh = [e(a, "Et0/0", b, "Et0/0") for a in (1, 2, 3) for b in (1, 2, 3) if a < b]  # IOL's shared e0/0 bridge
+    keep, dropped = point_to_point([cable, *mesh])
+    assert keep == [cable] and dropped == 3

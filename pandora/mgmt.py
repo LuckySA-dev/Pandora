@@ -15,7 +15,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
-from . import access, alloc, backup, config
+from . import access, alloc, backup, config, topology
 
 log = logging.getLogger("pandora.mgmt")
 # Any IOS "%" answer is a failure except a warning ("% Command rejected", "% Invalid input", "% ... overlaps ...")
@@ -35,14 +35,8 @@ def graph(edges) -> dict:
     """CDP edges between known devices -> {device: [(neighbor, my_port, its_port)]}, point-to-point links only.
     A port that hears several neighbors is a shared segment (an out-of-band management switch, a hub, a dumb
     switch in between): seen on real IOL, where every e0/0 sits on one bridge. It can't be a trunk link."""
-    hears = {}
-    for e in edges:
-        hears.setdefault((e["from"], e["from_port"]), set()).add(e["to"])
-        hears.setdefault((e["to"], e["to_port"]), set()).add(e["from"])
     g = {}
-    for e in edges:
-        if len(hears[(e["from"], e["from_port"])]) > 1 or len(hears[(e["to"], e["to_port"])]) > 1:
-            continue
+    for e in topology.point_to_point(edges)[0]:
         if isinstance(e["from"], int) and isinstance(e["to"], int):
             g.setdefault(e["from"], []).append((e["to"], e["from_port"], e["to_port"]))
             g.setdefault(e["to"], []).append((e["from"], e["to_port"], e["from_port"]))
@@ -342,7 +336,7 @@ def apply(ctx, p: dict, verify_timeout=None) -> list[dict]:
             time.sleep(3)
         r["reachable"] = good >= 3
         if r["reachable"]:  # from now on PandoraBox talks to it through its management domain
-            ctx.db.update(d["id"], ip=d["new_ip"])
+            ctx.db.update(d["id"], ip=d["new_ip"], note=f"management design: SSH on {d['new_ip']}")
             ctx.emit("device", ctx.db.device(d["id"]))
     with ThreadPoolExecutor(max_workers=16) as ex:
         list(ex.map(verify, p["devices"]))

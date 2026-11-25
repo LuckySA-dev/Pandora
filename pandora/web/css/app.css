@@ -101,7 +101,12 @@ p { margin: 0 0 8px; max-width: 72ch; }
 kbd { font: 12px var(--font); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px;
   padding: 0 6px; color: var(--ink-2); background: var(--panel); }
 .live { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 13px; margin-left: auto; }
-.content { padding: 24px; max-width: 1480px; width: 100%; }
+.content { padding: 24px; max-width: 1920px; width: 100%; }
+/* Bench: the device table takes the room, problems / onboarding / health sit beside it on wide screens */
+.bench-layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(320px, 400px); align-items: start; }
+.bench-layout > .grid { min-width: 0; }
+@media (max-width: 1200px) { .bench-layout { grid-template-columns: 1fr; } }
+.grid-table .clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; } /* long notes: "…", full text on hover */
 .page-head { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
 .page-head .lede { color: var(--ink-2); margin: 4px 0 0; }
 .page-head .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
@@ -304,6 +309,7 @@ pre.diff .hunk { color: var(--cable); display: block; }
 .node .sel-outline { fill: none; stroke: var(--cable); stroke-width: 2; }
 .node .handle { fill: var(--panel); stroke: var(--cable); stroke-width: 1.5; }
 .edge path { fill: none; stroke: color-mix(in srgb, var(--ink-2) 70%, transparent); stroke-width: 1.6; }
+.edge.peer path { stroke: color-mix(in srgb, var(--ink-2) 40%, transparent); stroke-width: 1.2; }
 .edge.down path { stroke: var(--led-red); stroke-dasharray: 6 4; stroke-width: 2.2; }
 .edge .pill { fill: var(--panel); stroke: var(--line); }
 .edge.down .pill { stroke: var(--led-red); }

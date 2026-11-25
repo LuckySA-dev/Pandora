@@ -6,7 +6,7 @@ import { api } from "../api.js";
 import { on } from "../live.js";
 import { $, attempt, html, render, toast } from "../ui.js";
 
-const KEY = "pandora.topology.layout.v2";
+const KEY = "pandora.topology.layout.v3"; // v3: tiered layout (edge routers, L3 backbones, then their switches)
 const GRID = 20, W = 200, H = 68, MIN_K = 0.2, MAX_K = 3;
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const short = (p) => String(p || "").replace(/^([A-Za-z]{2})[A-Za-z-]*?(\d)/, "$1$2");
@@ -63,7 +63,9 @@ export async function mount(root) {
       if (missing.length === s.nodes.size) fit();
     }
     const lede = $("#topo-lede", root);
-    if (lede && g.collected) lede.textContent = `${s.nodes.size} devices, ${s.edges.length} links from CDP and LLDP, collected ${new Date(g.collected * 1000).toLocaleTimeString()}. Cards stay where you put them.`;
+    if (lede && g.collected) lede.textContent = `${s.nodes.size} devices, ${s.edges.length} cabled links from CDP and LLDP, collected ${new Date(g.collected * 1000).toLocaleTimeString()}.`
+      + (g.shared ? ` ${g.shared} neighbours heard over a shared segment (an out-of-band switch or hub) are left out: they are not cables.` : "")
+      + " Select a card to see its port numbers.";
     draw();
   }
 
@@ -80,7 +82,7 @@ export async function mount(root) {
         <circle cx="1" cy="1" r="${Math.max(0.6, 1 / k)}" class="dot"></circle></pattern></defs>
       <rect class="bg" width="100%" height="100%" fill="url(#dots)"></rect>
       <g transform="translate(${x} ${y}) scale(${k})">
-        ${s.edges.map((e) => edge(s, e))}
+        ${s.edges.map((e) => edge(s, e, s.sel.has(e.from) || s.sel.has(e.to)))}
         ${nodes.map((n) => card(n, s.sel.has(n.id), k))}
       </g>
       ${s.drag?.marquee ? html`<rect class="marquee" x="${Math.min(s.drag.mx0, s.drag.mx1)}" y="${Math.min(s.drag.my0, s.drag.my1)}"
@@ -292,49 +294,80 @@ function card(n, selected, k) {
   </g>`;
 }
 
-function edge(s, e) {
-  const a = s.nodes.get(e.from), b = s.nodes.get(e.to);
+// Cards in different rows: an uplink, drawn top to bottom. Same row: a peer link (access pair, router pair),
+// drawn lighter so the tree reads first. Port numbers only for the selected card's links.
+function edge(s, e, labelled) {
+  let a = s.nodes.get(e.from), b = s.nodes.get(e.to);
   if (!a || !b || a.x == null || b.x == null) return "";
-  const right = b.x + W / 2 >= a.x + W / 2;
-  const x1 = right ? a.x + W : a.x, x2 = right ? b.x : b.x + W;
-  const y1 = a.y + H / 2, y2 = b.y + H / 2;
-  const dx = Math.max(40, Math.abs(x2 - x1) / 2) * (right ? 1 : -1);
-  const d = `M${x1} ${y1} C${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2} ${y2}`;
-  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-  const label = `${short(e.from_port)}  ${short(e.to_port)}`;
-  return html`<g class="edge ${e.down ? "down" : ""}"><path d="${d}"></path>
-    <g transform="translate(${mx} ${my})"><rect class="pill" x="${-label.length * 3.4 - 8}" y="-10" width="${label.length * 6.8 + 16}" height="20" rx="10"></rect>
-    <text class="pill-text" text-anchor="middle" y="4">${label}</text></g></g>`;
+  let pa = e.from_port, pb = e.to_port;
+  const vertical = Math.abs(a.y - b.y) > H;
+  let d, mx, my;
+  if (vertical) {
+    if (a.y > b.y) { [a, b] = [b, a]; [pa, pb] = [pb, pa]; }
+    const x1 = a.x + W / 2, y1 = a.y + H, x2 = b.x + W / 2, y2 = b.y;
+    const dy = (y2 - y1) / 2;
+    d = `M${x1} ${y1} C${x1} ${y1 + dy} ${x2} ${y2 - dy} ${x2} ${y2}`;
+    mx = (x1 + x2) / 2; my = (y1 + y2) / 2;
+  } else {
+    const right = b.x >= a.x;
+    const x1 = right ? a.x + W : a.x, x2 = right ? b.x : b.x + W, y = a.y + H, y2 = b.y + H;
+    const dip = 28 + Math.min(60, Math.abs(x2 - x1) / 6); // a shallow arc under the row, clear of the cards
+    d = `M${x1 - (right ? 20 : -20)} ${y} C${x1} ${y + dip} ${x2} ${y2 + dip} ${x2 + (right ? 20 : -20)} ${y2}`;
+    mx = (x1 + x2) / 2; my = (y + y2) / 2 + dip * 0.75;
+  }
+  const label = `${short(pa)}  ${short(pb)}`;
+  return html`<g class="edge ${e.down ? "down" : ""} ${vertical ? "" : "peer"}"><path d="${d}"></path>
+    ${labelled ? html`<g transform="translate(${mx} ${my})"><rect class="pill" x="${-label.length * 3.4 - 8}" y="-10" width="${label.length * 6.8 + 16}" height="20" rx="10"></rect>
+    <text class="pill-text" text-anchor="middle" y="4">${label}</text></g>` : ""}</g>`;
 }
 
+// Tiers, top to bottom, like a campus drawing: edge routers (and PandoraBox), the L3 backbones, then every
+// switch by its hop count from the nearest backbone. Without a management design the best-connected switches
+// stand in for backbones. Each row is ordered by where its uplinks sit above (barycentre), which keeps a
+// switch under its backbone and the lines from crossing. O(nodes + links) plus a sort per row.
 function autoLayout(s) {
-  // Layers by link distance from PandoraBox (or from the best-connected card of each island), left to right.
   const ids = [...s.nodes.keys()];
   const adj = new Map(ids.map((i) => [i, new Set()]));
   s.edges.forEach((e) => { adj.get(e.from)?.add(e.to); adj.get(e.to)?.add(e.from); });
-  const pos = new Map(), seen = new Set();
-  let top = 0;
-  const islands = [];
-  const order = [...ids].sort((a, b) => (a === "PandoraBox" ? -1 : b === "PandoraBox" ? 1 : adj.get(b).size - adj.get(a).size));
-  for (const start of order) {
-    if (seen.has(start)) continue;
-    const layers = [[start]];
-    seen.add(start);
-    for (let i = 0; i < layers.length; i++) {
-      const next = [];
-      layers[i].forEach((id) => adj.get(id).forEach((m) => { if (!seen.has(m)) { seen.add(m); next.push(m); } }));
-      if (next.length) layers.push(next);
-    }
-    islands.push(layers);
+  const node = (id) => s.nodes.get(id);
+  const top = (id) => id === "PandoraBox" || node(id).role === "router_edge";
+  let roots = ids.filter((id) => node(id).backbone);
+  if (!roots.length) {
+    const sw = ids.filter((id) => !top(id) && /^\d+$/.test(id));
+    const most = Math.max(0, ...sw.map((id) => adj.get(id).size));
+    roots = sw.filter((id) => most && adj.get(id).size === most);
   }
-  const loners = islands.filter((l) => l.length === 1 && l[0].length === 1).map((l) => l[0][0]);
-  for (const layers of islands.filter((l) => !(l.length === 1 && l[0].length === 1))) {
-    const tall = Math.max(...layers.map((l) => l.length));
-    layers.forEach((layer, li) => layer.forEach((id, i) => pos.set(id, { x: li * (W + 140), y: top + (i + (tall - layer.length) / 2) * (H + 60) })));
-    top += tall * (H + 60) + 40;
+  const tier = new Map(roots.map((id) => [id, 1]));
+  const queue = [...roots];
+  for (let i = 0; i < queue.length; i++) { // BFS, never through a router (routers sit on top)
+    const u = queue[i];
+    adj.get(u).forEach((v) => { if (!tier.has(v) && !top(v)) { tier.set(v, tier.get(u) + 1); queue.push(v); } });
   }
-  const perRow = Math.max(4, Math.ceil(Math.sqrt(loners.length * 2)));
-  loners.forEach((id, i) => pos.set(id, { x: (i % perRow) * (W + 40), y: top + Math.floor(i / perRow) * (H + 60) }));
+  ids.forEach((id) => { if (top(id)) tier.set(id, 0); });
+  const last = Math.max(1, ...tier.values()) + 1;
+  ids.forEach((id) => { if (!tier.has(id)) tier.set(id, last); }); // islands and neighbours with no path
+
+  const rows = [];
+  tier.forEach((t, id) => (rows[t] ||= []).push(id));
+  const pos = new Map();
+  const place = (row, y) => row.forEach((id, i) => pos.set(id, { x: i * (W + 40), y }));
+  const bary = (id, ref) => {
+    const xs = [...adj.get(id)].filter((m) => pos.has(m) && ref(m)).map((m) => pos.get(m).x);
+    return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : Infinity;
+  };
+  let y = 0;
+  const order = [1, 0, ...rows.keys()].filter((t, i, a) => rows[t] && a.indexOf(t) === i);
+  // place the backbones first, then routers above them, then each lower row under its uplinks
+  for (const t of order) {
+    const row = rows[t];
+    if (t === 1) row.sort();
+    else row.sort((a, b) => bary(a, (m) => tier.get(m) < t || t === 0) - bary(b, (m) => tier.get(m) < t || t === 0) || a.localeCompare(b));
+    place(row, 0);
+  }
+  rows.forEach((row) => { if (!row) return; row.forEach((id) => { pos.get(id).y = y; }); y += H + 140; });
+  // centre every row on the widest one
+  const width = Math.max(...rows.filter(Boolean).map((r) => r.length)) * (W + 40);
+  rows.forEach((row) => { if (!row) return; const off = (width - row.length * (W + 40)) / 2; row.forEach((id) => { pos.get(id).x += off; }); });
   pos.forEach((p) => { p.x = Math.round(p.x / GRID) * GRID; p.y = Math.round(p.y / GRID) * GRID; });
   return pos;
 }

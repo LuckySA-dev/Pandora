@@ -117,10 +117,13 @@ class DB:
         rows = self.q("SELECT * FROM devices WHERE id=?", device_id)
         return rows[0] if rows else None
 
-    def devices(self):
+    def devices(self, device_id=None):
+        """Every device with its allocation and reserved ports; one device by primary key when given."""
         return self.q("""SELECT d.*, a.hostname AS alloc_hostname, a.mgmt_ip,
                          (SELECT group_concat(port, ', ') FROM reserved_ports r WHERE r.device_id=d.id) AS reserved
-                         FROM devices d LEFT JOIN allocations a ON a.device_id=d.id ORDER BY d.id""")
+                         FROM devices d LEFT JOIN allocations a ON a.device_id=d.id"""
+                      + (" WHERE d.id=?" if device_id is not None else "") + " ORDER BY d.id",
+                      *([device_id] if device_id is not None else []))
 
     def find(self, **keys):
         for k in ("serial", "mac", "console_port", "ip"):
