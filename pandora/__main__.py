@@ -56,6 +56,7 @@ def main():
         from . import preflight
         sys.exit(preflight.run(args.config))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    logging.getLogger("tftpy").setLevel(logging.WARNING)  # ~15 lines per request; pandora.tftp logs each one
 
     cfg = config.load(args.config)
     ctx = Ctx(DB(args.db), cfg)
@@ -82,7 +83,9 @@ def main():
             tftp.start(cfg["server_ip"], Path(".pandora/tftp"), ctx.tftp_lookup)
         except OSError as e:
             sys.exit(f"Cannot bind DHCP/TFTP on {cfg['server_ip']}: {e}\n"
-                     "Run as Administrator and allow it in the firewall, e.g.:\n"
+                     "Is another PandoraBox still running? Find it with:\n"
+                     "  Get-NetUDPEndpoint -LocalPort 67,69,162 | Select LocalAddress, LocalPort, OwningProcess\n"
+                     "Otherwise run as Administrator and allow it in the firewall, e.g.:\n"
                      '  netsh advfirewall firewall add rule name="PandoraBox" dir=in action=allow '
                      "protocol=UDP localport=67,69,162\n"
                      '  netsh advfirewall firewall add rule name="PandoraBox-HTTP" dir=in action=allow '
@@ -90,14 +93,23 @@ def main():
         sniff.start(cfg["iface"], lambda n: _remember(ctx, n))
 
     def on_console(port, r):
-        facts = {k: v for k, v in r.items() if k != "console_state"}
-        dev = ctx.db.upsert(console_port=port, source="console", path="console",
-                            note=f"console: {r['console_state']}", **facts)
-        ctx.emit("device", dev)
+        ctx.emit("device", remember_console(ctx.db, port, r))
 
     console.watch(on_console, urls=cfg.get("console_urls") or ())
     log.info("UI: http://127.0.0.1:%s", cfg["http_port"])
-    uvicorn.run(app, host="0.0.0.0", port=int(cfg["http_port"]), log_level="warning")
+    # bounded: an open terminal or live page must not keep a stopped PandoraBox alive (and holding its ports)
+    # keep-alive 15 s: the IOS PnP agent reuses its connection exactly 5 s later, which raced uvicorn's 5 s default (RST)
+    uvicorn.run(app, host="0.0.0.0", port=int(cfg["http_port"]), log_level="warning", timeout_graceful_shutdown=5,
+                timeout_keep_alive=15)
+
+
+def remember_console(db, port, r) -> dict:
+    """A box heard on a console port. Source/delivery only for a box we didn't know: plugging a console cable into a
+    switch already on PnP/SSH must not switch its delivery to console (seen: a real 2960X mid-onboarding)."""
+    facts = {k: v for k, v in r.items() if k != "console_state"}
+    known = db.find(serial=facts.get("serial"), console_port=port)
+    first = {} if known else {"source": "console", "path": "console"}
+    return db.upsert(console_port=port, note=f"console: {r['console_state']}", **first, **facts)
 
 
 def _remember(ctx, n):

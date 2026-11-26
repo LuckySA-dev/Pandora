@@ -165,6 +165,12 @@ def check_rest(cfg) -> list[tuple]:
         out.append(("ok", "SNMPv3 priv", "AES available"))
     except ImportError:
         out.append(("fail", "SNMPv3 priv", "pip install 'cryptography>=47' (pysnmp needs it for AES)"))
+    from .hostkeys import legacy_ssh_missing
+    if missing := legacy_ssh_missing():
+        out.append(("fail", "SSH to classic IOS", f"this paramiko lacks {', '.join(missing)}: IOS 12.x/15.x boxes refuse "
+                                                  "to connect. pip install 'paramiko<5'"))
+    else:
+        out.append(("ok", "SSH to classic IOS", "SHA-1 key exchange and ssh-rsa available as fallback"))
     from serial.tools import list_ports
     ports = [p.device for p in list_ports.comports()] + list(cfg.get("console_urls") or [])
     out.append(("ok", "console", ", ".join(ports)) if ports else

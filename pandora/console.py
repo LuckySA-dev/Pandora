@@ -122,9 +122,14 @@ class Console:
                 continue
             out = self.send(line, 0.3 if not line.startswith("crypto key") else 8)
             if "% Invalid" in out or "% Incomplete" in out or "% Ambiguous" in out:
-                errors.append(f"{line.strip()} -> {out.strip().splitlines()[-1] if out.strip() else '?'}")
+                # IOS's own reason, not the prompt that follows it (the note showed only "host(config)#")
+                why = next((l.strip() for l in out.splitlines() if l.lstrip().startswith("%")), "?")
+                errors.append(f"{line.strip()} -> {why}")
         self.send("end")
-        self.send("write memory", 5)
+        # A failed paste is not saved: a reload brings the box back as it was (factory: dialog/PnP/AutoInstall again).
+        # Saving it gave a real 2960X a half config + startup-config, so it never called in over PnP afterwards.
+        if not errors:
+            self.send("write memory", 5)
         return errors
 
     def close(self):

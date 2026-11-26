@@ -424,7 +424,8 @@ def start_snmpsim(workdir: Path, ip, cdp_ip):
     data.mkdir(parents=True, exist_ok=True)
     # Real Cisco agents (and pandora) use an empty SNMPv3 context; snmpsim maps that to a file named "self".
     (data / "self.snmprec").write_text(snmprec(cdp_ip))
-    exe = shutil.which("snmpsim-command-responder") or str(
+    beside = Path(sys.executable).parent / "snmpsim-command-responder.exe"  # a venv run without activating it
+    exe = shutil.which("snmpsim-command-responder") or (str(beside) if beside.exists() else None) or str(
         Path(os.environ.get("APPDATA", "")) / "Python" / f"Python{sys.version_info.major}{sys.version_info.minor}"
         / "Scripts" / "snmpsim-command-responder.exe")
     args = [exe, f"--data-dir={data}", f"--agent-udpv4-endpoint={ip}:161", f"--cache-dir={workdir / 'snmp-cache'}",

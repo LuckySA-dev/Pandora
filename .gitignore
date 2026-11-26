@@ -2,8 +2,10 @@ __pycache__/
 *.pyc
 .pandora/
 pandora.db
+pandora*.db
 pandora.toml
 .venv/
 .pytest_cache/
 .ruff_cache/
+*.egg-info/
 *.log

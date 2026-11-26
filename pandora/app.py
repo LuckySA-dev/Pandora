@@ -87,12 +87,21 @@ def create_app(ctx, background=True) -> FastAPI:
         await ws.accept()
         q = asyncio.Queue()
         clients.add(q)
+
+        async def until_closed():  # the browser sends nothing: without this a closed page (or a shutting-down
+            with contextlib.suppress(WebSocketDisconnect, RuntimeError):  # server) went unnoticed and Ctrl+C
+                while True:  # waited on it forever, leaving the old copy holding ports 69/162
+                    await ws.receive_text()
+            q.put_nowait(None)
+
+        closed = asyncio.create_task(until_closed())
         try:
-            while True:
-                await ws.send_text(await q.get())
+            while (msg := await q.get()) is not None:
+                await ws.send_text(msg)
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
+            closed.cancel()
             clients.discard(q)
 
     return app

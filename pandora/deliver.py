@@ -35,6 +35,9 @@ class Ctx:
             return "", [str(e)], {}
         if not a["reserved_ports"]:
             problems.append(f"no default mgmt ports for PID '{dev['pid'] or '?'}': enter reserved ports")
+        if dev["role"] == "router_edge" and re.match(r"^(WS-C|C9[23]00|C1000|IE-?\d)", (dev["pid"] or "").upper()):
+            # the router template puts `ip address` on a physical port: a switch port refuses it (real 2960X)
+            problems.append(f"{dev['pid']} is a switch: pick the role switch_access, not router_edge")
         for key in ("admin_password", "snmp_auth", "snmp_priv"):
             if len(self.cfg.get(key) or "") < 8:
                 problems.append(f"env PANDORA_{key.upper()} missing or < 8 chars")
@@ -102,12 +105,25 @@ class Ctx:
                 self.db.set_state(i, "needs_credentials",
                                   "SSH is open: pick reserved mgmt ports in Preview (not uplinks), then enter credentials")
             else:
-                self.db.set_state(i, "queued", f"waiting for device via {path}")
+                self.db.set_state(i, "queued", f"waiting for device via {path}" + self._boot_hint(dev, path))
                 if path in ("console", "ssh"):
                     self.push_async(i)
             self.emit("device", self.db.device(i))
             out.append({"id": i, "queued": True, "state": self.db.device(i)["state"]})
         return out
+
+    def _boot_hint(self, dev, path) -> str:
+        """PnP/ZTP/AutoInstall wait for the box to call in, which it does only when it boots with no startup-config.
+        Say so, and say when PandoraBox itself already saved one on it (it will then wait forever)."""
+        if path not in BOOT_PATHS:
+            return ""
+        saved = self.db.q("SELECT ts FROM configs WHERE device_id=? AND method IN ('console', 'ssh') "
+                          "ORDER BY ts DESC LIMIT 1", dev["id"])
+        if saved:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(saved[0]["ts"]))
+            return (f": config was already pushed to it over console/SSH ({when}), so it may boot configured and never "
+                    f"call in. Wipe it (write erase, reload) or use Console delivery")
+        return ": it calls in only after booting with no startup-config, cabled to this laptop's segment"
 
     def set_credentials(self, device_id, creds: dict):
         access.CREDS[device_id] = creds

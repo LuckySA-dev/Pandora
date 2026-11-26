@@ -55,8 +55,45 @@ def on_trap(ctx, src, name, varbinds):
     ctx.emit("trap", {"src": src, "name": name, "varbinds": varbinds, "ts": time.time()})
     dev = ctx.db.find(ip=src)
     alerts.on_trap(ctx, dev, name, varbinds)
-    if name == "configChange" and dev:  # Oxidized-style: fetch right after the change
-        threading.Thread(target=_backup_and_check, args=(ctx, dev["id"]), daemon=True).start()
+    if name == "configChange" and dev and config_written(varbinds):  # Oxidized-style: fetch right after the change
+        schedule_backup(ctx, dev["id"])
+
+
+# CISCO-CONFIG-MAN-MIB ccmHistoryEventConfigDestination: 3 running, 4 startup are writes; 2 = commandSource is a read.
+_CCM_DEST = "1.3.6.1.4.1.9.9.43.1.1.6.1.5."
+
+
+def config_written(varbinds) -> bool:
+    """IOS sends ciscoConfigManEvent for reads too: `show running-config` is running -> commandSource. Answering that
+    with a backup (which runs `show running-config`) looped on a real 2960X: 180 informs and 370 SSH sessions in 30
+    minutes. Only a copy *into* running or startup is a change; an event we can't read counts as one."""
+    dest = [str(v) for n, v in varbinds if str(n).startswith(_CCM_DEST)]
+    return not dest or any(d in ("3", "4") for d in dest)
+
+
+_BACKUPS: dict[int, bool] = {}  # device_id -> "changed again while a backup ran"
+_BACKUPS_LOCK = threading.Lock()
+
+
+def schedule_backup(ctx, device_id, settle=10.0):
+    """One backup per device at a time; changes arriving meanwhile (a config session sends several) are folded
+    into one more run after `settle` seconds, never a thread each."""
+    with _BACKUPS_LOCK:
+        if device_id in _BACKUPS:
+            _BACKUPS[device_id] = True
+            return
+        _BACKUPS[device_id] = False
+
+    def run():
+        while True:
+            _backup_and_check(ctx, device_id)
+            with _BACKUPS_LOCK:
+                if not _BACKUPS[device_id]:
+                    del _BACKUPS[device_id]
+                    return
+                _BACKUPS[device_id] = False
+            time.sleep(settle)
+    threading.Thread(target=run, daemon=True, name=f"backup-{device_id}").start()
 
 
 def _backup_and_check(ctx, device_id):

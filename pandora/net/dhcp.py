@@ -35,8 +35,11 @@ def parse(pkt: bytes) -> dict:
 
 
 def build(req: dict, msg_type: int, yiaddr: str, server_ip: str, options: dict[int, bytes]) -> bytes:
+    # siaddr (next server) only when we hand out a TFTP file: classic IOS treats it as a config server and asks it
+    # for network-confg, cisconet.cfg, router-confg, ciscortr.cfg over and over (seen on a 2960X doing PnP)
+    siaddr = server_ip if {66, 150} & set(options) else "0.0.0.0"
     hdr = HDR.pack(2, 1, 6, 0, req["xid"], 0, req["flags"] | 0x8000, b"\0" * 4,
-                   socket.inet_aton(yiaddr), socket.inet_aton(server_ip), req["giaddr"],
+                   socket.inet_aton(yiaddr), socket.inet_aton(siaddr), req["giaddr"],
                    req["chaddr"], b"\0" * 64, b"\0" * 128, MAGIC)
     opts = {53: bytes([msg_type]), 54: socket.inet_aton(server_ip), **options}
     body = b"".join(bytes([k, len(v)]) + v for k, v in opts.items())
@@ -100,9 +103,12 @@ class DhcpServer:
     def _opts(self, extra):
         return {1: self.mask, 51: struct.pack("!I", 3600), **extra}
 
-    def serve_forever(self):
+    def bind(self):
+        """In the caller's thread, so a busy port stops startup. Exclusive: with SO_REUSEADDR a second PandoraBox
+        (an old copy that never exited) bound port 67 too, and two DHCP servers answered on one segment (seen)."""
         s = self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         if hasattr(socket, "SO_BINDTODEVICE") and self.iface:  # Linux
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, self.iface.encode())
@@ -110,6 +116,11 @@ class DhcpServer:
         else:  # Windows: binding to the NIC address limits us to that NIC
             s.bind((self.server_ip, 67))
         log.info("DHCP listening on %s:67", self.server_ip)
+
+    def serve_forever(self):
+        if self.sock is None:
+            self.bind()
+        s = self.sock
         while True:
             pkt, addr = s.recvfrom(4096)
             try:
@@ -122,6 +133,7 @@ class DhcpServer:
                 s.sendto(reply, ("255.255.255.255", 68))
 
     def start(self):
+        self.bind()  # raises OSError here, not in the thread
         threading.Thread(target=self.serve_forever, daemon=True, name="dhcp").start()
 
 

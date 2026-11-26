@@ -9,6 +9,9 @@ dependencies = [
   "jinja2>=3.1",
   "pyserial>=3.5",
   "netmiko>=4.3",
+  # <5: paramiko 5 removed SHA-1 kex (group14/group1/gex-sha1) and ssh-rsa host keys, the only ones classic IOS 15.x
+  # offers (real 2960X 15.2(2)E7: "Incompatible ssh peer (no acceptable kex algorithm)"). 4.x tries modern ones first.
+  "paramiko>=3.5.1,<5",
   "pysnmp>=7,<8",
   "cryptography>=47",  # pysnmp 7 needs cryptography.hazmat.decrepit (AES-CFB) for SNMPv3 priv
   "tftpy>=0.8",
@@ -20,6 +23,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff", "websockets", "snmpsim", "pysmi"]  # snmpsim + pysmi: scripts/mvp_check.py
+
+[tool.setuptools.packages.find]
+include = ["pandora*"]  # lab/ also holds Python: without this a fresh `pip install -e .` refuses to guess
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

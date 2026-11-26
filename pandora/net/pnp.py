@@ -38,8 +38,12 @@ def req_cli(udi, c, cmd):
 
 
 def req_backoff(udi, c, minutes=None):
+    # <reason> is required by the classic-IOS agent (2960X 15.2(2)E7 answered every backoff without it with a fault,
+    # "XML_ERROR_MISSING_ELEMENT reason", and polled every 5 s instead of waiting). IOS-XE accepts it too.
     inner = "<terminate/>" if minutes is None else f"<callbackAfter><minutes>{minutes}</minutes></callbackAfter>"
-    return _wrap(udi, f'<request correlator="{c}" xmlns="urn:cisco:pnp:backoff"><backoff>{inner}</backoff></request>')
+    reason = "done" if minutes is None else "waiting for the operator"
+    return _wrap(udi, f'<request correlator="{c}" xmlns="urn:cisco:pnp:backoff"><backoff><reason>{reason}</reason>'
+                      f'{inner}</backoff></request>')
 
 
 def bye(udi, c):
@@ -154,7 +158,9 @@ def router(ctx) -> APIRouter:
                 ctx.finish(dev["id"], "pnp", False, f"config-upgrade failed: {m['texts']}")
         elif dev and step == "save":
             steps[serial] = "saved"
-            ctx.finish(dev["id"], "pnp", bool(m["success"]), "PnP config applied + saved")
+            # a failed save used to be noted "applied + saved" too (real 2960X: running-config had it, startup didn't)
+            ctx.finish(dev["id"], "pnp", bool(m["success"]), "PnP config applied + saved" if m["success"] else
+                       f"config applied, but write memory over PnP failed (not saved): {m['texts']}")
         if dev:
             ctx.emit("device", ctx.db.device(dev["id"]))
         return xml(bye(m["udi"], m["correlator"]))
@@ -163,7 +169,10 @@ def router(ctx) -> APIRouter:
     def cfg_file(request: Request, serial: str):
         dev = ctx.db.find(serial=serial)
         text = ctx.boot_config(dev, "pnp", request.client.host) if dev else None
-        return Response(text, media_type="text/plain") if text else Response(status_code=404)
+        # Close after the file: classic IOS (2960X 15.2(2)E7) fetches it on its keep-alive PnP connection and reads to
+        # end-of-file; kept open, it reported "%Error opening http://.../cfg/<serial> (I/O error)" (packet capture).
+        return Response(text, media_type="text/plain", headers={"Connection": "close"}) if text \
+            else Response(status_code=404)
 
     # ---- IOS-XE ZTP --------------------------------------------------------
     @r.get("/ztp/bootstrap.py")

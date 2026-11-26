@@ -10,6 +10,15 @@ import paramiko
 from . import alerts
 
 PROBLEM = "ssh-host-key"
+# What classic IOS 12.x/15.x SSH offers (real 2960X 15.2(2)E7): nothing newer. paramiko 5 dropped all of these.
+LEGACY_KEX = ("diffie-hellman-group14-sha1", "diffie-hellman-group-exchange-sha1", "diffie-hellman-group1-sha1")
+
+
+def legacy_ssh_missing() -> list[str]:
+    """Algorithms classic IOS needs that this paramiko can't do (empty = fine)."""
+    t = paramiko.Transport
+    return [k for k in LEGACY_KEX if k not in t._preferred_kex] + \
+        ([] if "ssh-rsa" in t._preferred_keys else ["ssh-rsa host keys"])
 
 
 class HostKeyChanged(paramiko.SSHException):

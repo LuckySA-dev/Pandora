@@ -70,7 +70,14 @@ def _blocks(text: str) -> dict[str, list[str]]:
             parent = None
             continue
         m = re.match(r"^interface range (.+)$", line, re.I)
-        names = [f"interface {p}" for p in expand_range(m.group(1))] if m else [_norm(line)]
+        # IOS splits `line vty 0 15` into `line vty 0 4` + `line vty 5 15` (classic IOS 15.2 on a real 2960X):
+        # one block per line on both sides, so any split compares equal
+        v = re.match(r"^line vty (\d+) (\d+)$", line.strip())
+        if v and int(v.group(1)) <= int(v.group(2)) <= 1869:
+            names = [f"line vty {n}" for n in range(int(v.group(1)), int(v.group(2)) + 1)]
+            m = m or v
+        else:
+            names = [f"interface {p}" for p in expand_range(m.group(1))] if m else [_norm(line)]
         for n in names:
             out.setdefault(n, [])
         parent = names[-1]
@@ -88,6 +95,7 @@ def _blocks(text: str) -> dict[str, list[str]]:
 def _norm(line: str) -> str:
     line = re.sub(r"\s+", " ", line.strip())
     line = re.sub(r"^ip domain-name ", "ip domain name ", line)
+    line = re.sub(r"^(no )?ip domain-lookup\b", r"\1ip domain lookup", line)  # classic IOS 15.x spelling
     if m := re.match(r"^(username \S+)", line):
         return m.group(1)
     if m := re.match(r"^interface (.+)$", line):

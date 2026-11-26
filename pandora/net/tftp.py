@@ -3,6 +3,7 @@ import importlib
 import io
 import logging
 import threading
+import time
 from pathlib import Path
 
 import tftpy
@@ -35,5 +36,24 @@ def start(server_ip: str, root: Path, lookup):
         return io.BytesIO(text.encode()) if text else None
 
     server = tftpy.TftpServer(str(root), dyn_file_func=dyn, flock=False)
-    threading.Thread(target=server.listen, args=(server_ip, 69), daemon=True, name="tftp").start()
-    return server
+    # tftpy binds inside listen(), in its thread: a busy port 69 used to kill only that thread while PandoraBox
+    # ran on without AutoInstall (seen: an old copy still held 69). Wait for the bind and re-raise here instead.
+    failed = []
+
+    def run():
+        try:
+            server.listen(server_ip, 69)
+        except Exception as e:
+            failed.append(e)
+
+    threading.Thread(target=run, daemon=True, name="tftp").start()
+    deadline = time.time() + 5
+    while not failed and time.time() < deadline:
+        sock = server.sock
+        try:
+            if sock and sock.getsockname()[1] == 69:
+                return server
+        except OSError:
+            pass  # created, not bound yet
+        time.sleep(0.05)
+    raise failed[0] if failed else OSError(f"TFTP did not start on {server_ip}:69")

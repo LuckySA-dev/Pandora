@@ -38,8 +38,11 @@ def router(ctx):
                     raise LookupError("no such device")
                 link = await asyncio.to_thread(_open, ctx, d, stack, _clamp(cols, 20, 400), _clamp(rows, 5, 200))
             except Exception as e:
-                await ws.send_bytes(f"\r\n*** {type(e).__name__}: {e}\r\n".encode())
-                return await ws.close()
+                # the browser may have left while we waited (closed the tab, page re-rendered): nothing to tell
+                with contextlib.suppress(WebSocketDisconnect, RuntimeError):
+                    await ws.send_bytes(f"\r\n*** {type(e).__name__}: {e}\r\n".encode())
+                    await ws.close()
+                return
 
             def pump():  # device -> browser
                 while alive.is_set():
@@ -130,9 +133,13 @@ class _Ssh:
 
 
 def _open(ctx, d, stack, cols, rows):
-    """Blocking: a link to the device's console port or an SSH shell sized to the browser window."""
-    if d["path"] == "console" and d["console_port"]:
+    """Blocking: a link to the device's console port or an SSH shell sized to the browser window.
+    A box with no address yet (found on console, waiting for PnP/AutoInstall) can only be reached on its console:
+    SSH to ip=None made paramiko try localhost and hang 10 s ("TimeoutError: timed out", seen on a real 2960X)."""
+    if d["console_port"] and (d["path"] == "console" or not d["ip"]):
         return _Console(stack.enter_context(console.session(d["console_port"])))
+    if not d["ip"]:
+        raise LookupError("this device has no IP address yet: pre-config it, or connect it on a console port")
     import paramiko
 
     from ..hostkeys import Pin
