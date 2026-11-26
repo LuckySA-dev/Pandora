@@ -34,6 +34,15 @@ interface {{ p }}
  spanning-tree portfast
  no shutdown
 {% endfor %}
+{# provisioning backbone (backbone.py): free front-panel ports on the provisioning segment for new boxes #}
+{% for p in backbone_ports or [] %}
+interface {{ p }}
+ description PANDORA-PROVISION
+ switchport mode access
+ switchport access vlan {{ mgmt_vlan }}
+ spanning-tree portfast
+ no shutdown
+{% endfor %}
 {# ops_retired: the management design gave it an address in its domain and the old one was removed (mgmt.retire) #}
 interface Vlan{{ mgmt_vlan }}
  description PANDORA-MGMT

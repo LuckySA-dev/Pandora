@@ -392,7 +392,7 @@ class Ctx:
         if ok and method in ("pnp", "ztp", "autoinstall"):
             threading.Thread(target=self.complete, args=(device_id,), daemon=True).start()
 
-    def learn_from_neighbor(self, n) -> dict | None:
+    def learn_from_neighbor(self, n, dev=None) -> dict | None:
         """CDP heard on the laptop NIC from a box being onboarded: its model and the name of the port the laptop is
         cabled to. A factory box sends CDP within seconds of booting, with its DHCP address, before any config. That
         port is exactly the one to keep as the management port, named the way *this* box names it (real 2960:
@@ -400,7 +400,8 @@ class Ctx:
         configured; a box behind another switch is not heard (the switch in between is), so nothing is guessed."""
         if n.get("via") != "cdp":
             return None  # LLDP port IDs are often MACs or descriptions, not interface names
-        dev = next((d for ip in n.get("addresses") or [] if (d := self.db.find(ip=ip))), None)
+        # dev: already matched by the caller (the provisioning backbone, by its MAC table): CDP heard on its port
+        dev = dev or next((d for ip in n.get("addresses") or [] if (d := self.db.find(ip=ip))), None)
         dev = dev or self._by_mac_block(n.get("src_mac"))
         if not dev or dev["state"] in ("provisioning", "provisioned"):
             return None

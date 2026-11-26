@@ -198,6 +198,18 @@ label.field { display: block; font-size: 13px; color: var(--ink-2); margin: 12px
 .port.reserved .jack { outline: 2px solid var(--tape); outline-offset: 1px; }
 .port .tag { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: var(--tape);
   color: var(--tape-ink); font: 700 8px/1 var(--font-head); padding: 2px 3px; border-radius: 1px; white-space: nowrap; }
+.kind-tag { font-size: 11px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; margin-left: 4px; }
+.warn-text { color: var(--led-amber); }
+.ports-table td { white-space: nowrap; }
+.port.shut .jack { opacity: .35; }
+.port.shut .jack::before { content: ""; position: absolute; left: 3px; right: 3px; top: 50%; height: 2px; background: var(--led-red); }
+.port .tag.below { top: auto; bottom: -12px; }
+/* uplink / SFP cages: their own block on the right, square cages without the RJ45 latch, like the real module */
+.faceplate .uplinks { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-left: 14px; padding: 0 8px 2px;
+  border-left: 2px solid #3a434c; }
+.faceplate .uplink-label { font: 600 9px/1 var(--font-head); color: #7f8b95; letter-spacing: .08em; }
+.port.sfp .jack { height: 14px; border-radius: 1px; background: #0d1013; box-shadow: inset 0 0 0 2px #46505a; }
+.port.sfp .jack::after { display: none; }
 .faceplate.compact { padding: 8px 10px; grid-template-columns: 1fr; }
 .faceplate.compact .port, .faceplate.compact .port .jack { width: 12px; }
 .faceplate.compact .port .jack { height: 9px; }

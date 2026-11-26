@@ -9,7 +9,7 @@ const PIPELINE = ["discovered", "identified", "queued", "provisioning", "provisi
 
 const COLUMNS = [
   { key: "name", label: "Device", sort: "name", render: (d) => html`<a href="#/devices/${d.id}">${deviceName(d)}</a><div class="sub">${d.pid || "model unknown"}</div>` },
-  { key: "state", label: "State", sort: "state", render: (d) => html`${stateBadge(d.state)}${reachTag(d)}` },
+  { key: "state", label: "State", sort: "status", render: (d) => html`${stateBadge(d.status || d.state)}${d.status === "offline" ? reachTag(d) : ""}` },
   { key: "severity", label: "Problems", sort: "severity", render: (d) => (d.severity ? html`<span class="sev-pill sev-${d.severity}">${d.severity}</span>` : html`<span class="muted">none</span>`) },
   // the address PandoraBox reaches it on now (after a management design that is the domain address, not the
   // pre-config one, which may have been retired)
@@ -68,7 +68,8 @@ export async function mount(root) {
       grid.patch(id, { ports_up: up, ports_total: total, polled: ts });
       totals();
     }),
-    on("device", (d) => { if (d.removed || !grid.patch(d.id, d)) later(); else totals(); }),
+    // a state or reachability change moves the live status, which the server works out (status.py): reload, debounced
+    on("device", later),
     on("problem", later),
     on("compliance", later),
   ];
@@ -108,6 +109,8 @@ function view(dash, open) {
       <section class="panel">
         <h2>Health</h2>
         <dl class="facts" style="margin-top:8px">
+          ${dash.statuses ? html`<dt>Status</dt><dd>${["ready", "offline", "degraded", "restarted", "drifted", "configured"].filter((s) => dash.statuses[s]).map((s, i) =>
+            html`${i ? ", " : ""}${dash.statuses[s]} ${STATE_LABEL[s].toLowerCase()}`) || "none configured yet"}</dd>` : ""}
           <dt>Answering SNMP</dt><dd>${dash.availability.up} of ${dash.availability.total}${dash.availability.down ? `, ${dash.availability.down} offline` : ""}</dd>
           <dt>Config compliant</dt><dd>${dash.compliance.compliant}${dash.compliance.drift ? html`, <a href="#/problems">${dash.compliance.drift} drifted</a>` : ""}${dash.compliance.unchecked ? `, ${dash.compliance.unchecked} not checked yet` : ""}</dd>
           ${dash.top_cpu.length ? html`<dt>Busiest CPU</dt><dd>${dash.top_cpu.map((c, i) => html`${i ? ", " : ""}<a href="#/devices/${c.id}">${c.hostname}</a> ${c.cpu}%`)}</dd>` : ""}

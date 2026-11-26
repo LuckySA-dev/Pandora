@@ -35,6 +35,20 @@ IF_NAME = "1.3.6.1.2.1.31.1.1.1.1"
 IF_OPER = "1.3.6.1.2.1.2.2.1.8"
 IF_HC_IN = "1.3.6.1.2.1.31.1.1.1.6"
 IF_HC_OUT = "1.3.6.1.2.1.31.1.1.1.10"
+IF_ADMIN = "1.3.6.1.2.1.2.2.1.7"            # 1 up, 2 down (shut), 3 testing
+IF_IN_ERR = "1.3.6.1.2.1.2.2.1.14"
+IF_OUT_ERR = "1.3.6.1.2.1.2.2.1.20"
+IF_HIGH_SPEED = "1.3.6.1.2.1.31.1.1.1.15"   # Mbit/s
+IF_ALIAS = "1.3.6.1.2.1.31.1.1.1.18"        # the port's `description`
+MEM_USED = "1.3.6.1.4.1.9.9.48.1.1.1.5"     # CISCO-MEMORY-POOL-MIB, first pool = processor
+MEM_FREE = "1.3.6.1.4.1.9.9.48.1.1.1.6"
+# CISCO-ENVMON-MIB: (description, state, value) per sensor; state 1 normal 2 warning 3 critical 4 shutdown ...
+ENV = {"temp": ("1.3.6.1.4.1.9.9.13.1.3.1.2", "1.3.6.1.4.1.9.9.13.1.3.1.6", "1.3.6.1.4.1.9.9.13.1.3.1.3"),
+       "fan": ("1.3.6.1.4.1.9.9.13.1.4.1.2", "1.3.6.1.4.1.9.9.13.1.4.1.3", None),
+       "psu": ("1.3.6.1.4.1.9.9.13.1.5.1.2", "1.3.6.1.4.1.9.9.13.1.5.1.3", None)}
+ENV_STATE = {"1": "normal", "2": "warning", "3": "critical", "4": "shutdown", "5": "notPresent", "6": "notFunctioning"}
+PORT_FIELDS = ((IF_OPER, "oper"), (IF_ADMIN, "admin"), (IF_HC_IN, "in"), (IF_HC_OUT, "out"), (IF_HIGH_SPEED, "speed"),
+               (IF_ALIAS, "alias"), (IF_IN_ERR, "inerr"), (IF_OUT_ERR, "outerr"))
 CPU_5MIN = "1.3.6.1.4.1.9.9.109.1.1.1.1.8"
 AVG_BUSY5 = "1.3.6.1.4.1.9.2.1.58"           # OLD-CISCO-CPU-MIB: IOL 17.18 has only this one (no cpmCPUTotalTable)
 CDP_CACHE = "1.3.6.1.4.1.9.9.23.1.2.1.1"   # .4 address .6 deviceId .7 devicePort .8 platform; index ifIndex.n
@@ -207,15 +221,37 @@ async def neighbors(ip, a) -> list[dict]:
 
 
 async def poll(ip, a) -> dict:
-    """Interface status + traffic counters + CPU. Returns {name: value}."""
+    """Every port (link, admin state, speed, description, traffic and error counters), CPU, memory, uptime and the
+    environment sensors (temperature, fans, power supplies). Returns {name: value}; `_ifindex` maps ifIndex -> port
+    name, so a linkDown inform (which carries only the index) can name its port."""
     async with session(ip) as s:
         ifn = {k.rsplit(".", 1)[1]: str(v) for k, v in (await walk(ip, a, IF_NAME, s=s)).items()}
         out = {}
-        for base, label in ((IF_OPER, "oper"), (IF_HC_IN, "in"), (IF_HC_OUT, "out")):
+        for base, label in PORT_FIELDS:
             for k, v in (await walk(ip, a, base, s=s)).items():
                 name = ifn.get(k.rsplit(".", 1)[1])
                 if name and not name.startswith(("Nu", "Vo", "Lo")):
-                    out[f"{name}:{label}"] = {"1": "up", "2": "down"}.get(str(v), str(v)) if label == "oper" else str(v)
+                    if label in ("oper", "admin"):
+                        v = {"1": "up", "2": "down", "3": "testing"}.get(str(v), str(v))
+                    out[f"{name}:{label}"] = str(v)
+        out["_ifindex"] = ifn
+        try:  # an image without the MIB just answers nothing
+            used, free = (list((await walk(ip, a, b, s=s)).values()) for b in (MEM_USED, MEM_FREE))
+            if used and free and int(used[0]) + int(free[0]):
+                out["mem_pct"] = str(round(100 * int(used[0]) / (int(used[0]) + int(free[0]))))
+        except Exception:
+            pass
+        for kind, (desc_oid, state_oid, value_oid) in ENV.items():
+            try:
+                desc = {k.rsplit(".", 1)[1]: str(v) for k, v in (await walk(ip, a, desc_oid, s=s)).items()}
+                for k, v in (await walk(ip, a, state_oid, s=s)).items():
+                    i = k.rsplit(".", 1)[1]
+                    out[f"env:{kind}:{desc.get(i) or f'{kind} {i}'}"] = ENV_STATE.get(str(v), str(v))
+                for k, v in ((await walk(ip, a, value_oid, s=s)).items() if value_oid else ()):
+                    i = k.rsplit(".", 1)[1]
+                    out[f"temp:{desc.get(i) or f'temp {i}'}"] = str(v)
+            except Exception:
+                pass
         cpu = list((await walk(ip, a, CPU_5MIN, s=s)).values()) or list((await walk(ip, a, AVG_BUSY5, s=s)).values())
         try:  # sysUpTime: a restart shows as uptime going back (alerts.on_sample), even with no trap received
             out["uptime"] = str(next(iter((await get(ip, a, SYS_UPTIME, s=s)).values())))

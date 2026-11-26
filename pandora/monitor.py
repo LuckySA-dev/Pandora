@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 
-from . import alerts, compliance, snmp
+from . import alerts, compliance, snmp, status
 
 log = logging.getLogger("pandora.monitor")
 LAST: dict[int, dict] = {}  # device_id -> last SNMP sample (for "went down" transitions + dashboard)
@@ -33,22 +33,57 @@ async def poll_one(ctx, d) -> dict:
     _LAST_TRY[d["id"]] = time.time()
     sample, now = await snmp.poll(d["ip"], snmp.auth(ctx.cfg, dev=d)), time.time()
     mark_online(ctx, d, now)
+    keep = [(k, v) for k, v in sample.items() if k.endswith(_HISTORY) or k in ("cpu5min", "mem_pct", "uptime")
+            or k.startswith("temp:")]  # numbers worth a history; names, descriptions and speeds only in LAST
     with ctx.db.lock:  # one transaction per poll, not one commit per value
         ctx.db.conn.execute("BEGIN")
         try:
-            ctx.db.conn.executemany("INSERT INTO snmp_samples VALUES (?,?,?,?)",
-                                    [(d["id"], now, k, v) for k, v in sample.items()])
+            ctx.db.conn.executemany("INSERT INTO snmp_samples VALUES (?,?,?,?)", [(d["id"], now, k, v) for k, v in keep])
         except Exception:
             ctx.db.conn.execute("ROLLBACK")
             raise
         ctx.db.conn.execute("COMMIT")
-    alerts.on_sample(ctx, d, sample, LAST.get(d["id"]))
+    prev = LAST.get(d["id"]) or {}
+    alerts.on_sample(ctx, d, sample, prev or None)
     down = {k[:-5] for k, v in sample.items() if k.endswith(":oper") and v == "down"}
     total = sum(k.endswith(":oper") for k in sample)
     # counted once per poll, so every inventory request reads them in O(1) per row
-    LAST[d["id"]] = {**sample, "_ts": now, "_up": total - len(down), "_total": total, "_down": down}
+    LAST[d["id"]] = {**sample, **rates(sample, prev, now), "_ts": now, "_up": total - len(down), "_total": total,
+                     "_down": down}
     ctx.emit("snmp", {"id": d["id"], "ts": now, "sample": sample})
     return sample
+
+
+_HISTORY = (":oper", ":in", ":out", ":inerr", ":outerr")
+
+
+def rates(sample: dict, prev: dict, now: float) -> dict:
+    """Bits per second per port from the 64-bit counters of two polls ('Gi1/0/1:in_bps'). A counter that went back
+    (the box restarted, the counter was cleared) gives no rate for that poll rather than a nonsense one."""
+    dt = now - prev.get("_ts", 0)
+    if not prev or not 0 < dt < 3600:
+        return {}
+    out = {}
+    for k, v in sample.items():
+        if k.endswith((":in", ":out")) and str(v).isdigit() and str(prev.get(k, "")).isdigit():
+            delta = int(v) - int(prev[k])
+            if delta >= 0:
+                out[f"{k}_bps"] = round(delta * 8 / dt)
+    return out
+
+
+async def backbones_forever(ctx, every=30):
+    """Provisioning backbones: read who is plugged into their provisioning ports (CDP + MAC table, backbone.scan),
+    so a box plugged in there gets its model, its management port and "behind <switch> <port>" without a click."""
+    from . import backbone
+    while True:
+        await asyncio.sleep(every)
+        for d in ctx.db.devices():
+            if d["state"] == "provisioned" and d["reach"] != "offline" and backbone.active(ctx, d["id"]):
+                try:
+                    await asyncio.to_thread(backbone.scan, ctx, d["id"])
+                except Exception as e:
+                    log.info("backbone scan of %s: %s", d["id"], e)
 
 
 async def poll_forever(ctx, every=60, parallel=16):
@@ -79,7 +114,9 @@ def on_trap(ctx, src, name, varbinds):
     dev = ctx.db.find(ip=src)
     if dev and dev["state"] == "provisioned":
         mark_online(ctx, dev)  # it just reached us: no need to wait for the next poll
-    alerts.on_trap(ctx, dev, name, varbinds)
+    index = next((str(v) for n, v in varbinds if str(n).startswith("1.3.6.1.2.1.2.2.1.1.")), "")
+    port = (LAST.get(dev["id"], {}).get("_ifindex") or {}).get(index) if dev else None
+    alerts.on_trap(ctx, dev, name, varbinds, port=port)
     if name == "configChange" and dev and config_written(varbinds):  # Oxidized-style: fetch right after the change
         schedule_backup(ctx, dev["id"])
 
@@ -150,8 +187,13 @@ def dashboard(ctx) -> dict:
     cpu = sorted(((int(LAST[d["id"]]["cpu5min"]), d) for d in prov
                   if str(LAST.get(d["id"], {}).get("cpu5min", "")).isdigit()), key=lambda t: -t[0])[:5]
     comp = {r["device_id"]: json.loads(r["result"])["compliant"] for r in ctx.db.q("SELECT * FROM compliance")}
+    worst = alerts.worst(ctx.db)
+    statuses = {}
+    for d in devs:
+        s = status.of(d, worst.get(d["id"]), comp.get(d["id"]), LAST.get(d["id"]))
+        statuses[s] = statuses.get(s, 0) + 1
     return {
-        "states": states, "total": len(devs),
+        "states": states, "statuses": statuses, "total": len(devs),
         "problems": by_sev, "open_problems": problems[:8],
         "availability": {"up": len(prov) - len(down & {d["id"] for d in prov}), "down": len(down), "total": len(prov)},
         "top_cpu": [{"id": d["id"], "hostname": d["hostname"], "cpu": c} for c, d in cpu],

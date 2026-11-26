@@ -77,6 +77,15 @@ export async function mount(root, params) {
       await loadDet(); draw();
     }
     if (act === "upgrade") await upgradeDialog(st, async () => { await loadDet(); draw(); });
+    if (act === "port") await portDialog(st, b.dataset.port, b.dataset.up === "1", async () => { await loadDet(); draw(); });
+    if (act === "bb-add") await backboneDialog(st, async () => { await loadDet(); await backboneScan(st, draw); });
+    if (act === "bb-scan") await backboneScan(st, draw);
+    if (act === "bb-stop" && await confirmDialog("Stop being a provisioning backbone?", html`<p>Its provisioning ports go back to
+        factory defaults (<code>default interface</code>): boxes plugged in there lose the provisioning network.</p>`, "Stop", "danger")) {
+      if (await attempt(() => api.post(`/api/devices/${id}/backbone/stop`, { confirm: true }), "Provisioning ports back to defaults")) {
+        st.bb = null; await loadDet(); draw();
+      }
+    }
     if (act === "dry" || act === "send") await push(st, act === "dry", draw);
     if (act === "connect") openTerminal(st);
     if (act === "break") { st.term?.send({ break: true }); st.term?.xterm.focus(); }
@@ -107,6 +116,44 @@ export async function mount(root, params) {
   const offs = [on("device", (d) => mine(d) && later()), on("snmp", (d) => mine(d) && later()),
     on("problem", (d) => mine(d) && later()), on("backup", (d) => mine(d) && later()), on("compliance", (d) => mine(d) && later())];
   return () => { offs.forEach((f) => f()); clearTimeout(t); closeTerminal(st); };
+}
+
+// ---- ports and health (SNMP) ---------------------------------------------------------------
+function linkState(i) {
+  if (i.admin === "down") return html`<span class="state"><span class="led"></span>shut down</span>`;
+  const led = i.oper === "up" ? "green" : i.oper === "down" ? "red" : "";
+  return html`<span class="state"><span class="led ${led}"></span>${i.oper || ""}</span>`;
+}
+const speed = (mbps) => { const n = Number(mbps); return !n ? "" : n >= 1000 ? `${n / 1000} Gb/s` : `${n} Mb/s`; };
+const bps = (v) => {
+  const n = Number(v);
+  if (v == null || !Number.isFinite(n)) return html`<span class="sub">…</span>`;
+  const u = ["b/s", "kb/s", "Mb/s", "Gb/s"];
+  let i = 0, x = n;
+  while (x >= 1000 && i < u.length - 1) { x /= 1000; i += 1; }
+  return `${x < 10 && i ? x.toFixed(1) : Math.round(x)} ${u[i]}`;
+};
+function health(h) {
+  if (!h) return "";
+  const up = Number(h.uptime);
+  const uptime = Number.isFinite(up) && h.uptime != null ? (up < 360000 ? `${Math.round(up / 6000)} min` : up < 8640000 ? `${Math.round(up / 360000)} h` : `${Math.round(up / 8640000)} days`) : "";
+  const bad = (h.env || []).filter((e) => !["normal", "notPresent"].includes(e.state));
+  return html`${uptime ? html`<dt>Uptime</dt><dd>${uptime}</dd>` : ""}
+    ${h.mem_pct != null ? html`<dt>Memory</dt><dd>${h.mem_pct}% used</dd>` : ""}
+    ${(h.env || []).length ? html`<dt>Fans, power, temp.</dt><dd>${bad.length
+      ? bad.map((e, i) => html`${i ? ", " : ""}<span class="warn-text">${e.name}: ${e.state}</span>`)
+      : `all normal (${h.env.length} sensors${h.env.filter((e) => e.value).map((e) => `, ${e.name} ${e.value} °C`).join("")})`}</dd>` : ""}`;
+}
+
+async function portDialog(st, port, up, done) {
+  const ok = await confirmDialog(up ? `Enable ${port}?` : `Shut down ${port}?`, html`<p>PandoraBox logs in to
+    ${deviceName(st.det.device)} and sends <code>interface ${port}</code> / <code>${up ? "no shutdown" : "shutdown"}</code>,
+    then saves the configuration.${up ? "" : " Whatever is plugged into it loses its link."}</p>`, up ? "Enable port" : "Shut down port", up ? "primary" : "danger");
+  if (!ok) return;
+  if (await attempt(() => api.post(`/api/devices/${st.id}/ports/admin`, { port, up, confirm: true }), up ? `${port} enabled` : `${port} shut down`)) {
+    await attempt(() => api.post(`/api/snmp/poll/${st.id}`));
+    await done();
+  }
 }
 
 async function upgradeDialog(st, done) {
@@ -148,7 +195,7 @@ function view(st) {
   <p style="margin:0 0 6px"><a href="#/devices">Devices</a></p>
   <div class="page-head">
     <div><h1>${deviceName(d)}</h1>
-      <p class="lede">${stateBadge(d.state)} ${d.pid || "Model unknown"}${d.serial ? `, serial ${d.serial}` : ""}${d.version ? `, ${d.os_type === "iosxe" ? "IOS-XE" : "IOS"} ${d.version}` : ""}</p></div>
+      <p class="lede">${stateBadge(d.status || d.state)} ${d.pid || "Model unknown"}${d.serial ? `, serial ${d.serial}` : ""}${d.version ? `, ${d.os_type === "iosxe" ? "IOS-XE" : "IOS"} ${d.version}` : ""}</p></div>
     <div class="actions">
       ${d.state === "needs_credentials" ? html`<button class="btn primary" data-act="login">Enter login</button>` : ""}
       <button class="btn" data-act="poll" ${d.ip ? "" : "disabled"}>Poll now</button>
@@ -174,11 +221,20 @@ function overview(st) {
             ${p.acked ? html`<span class="sev-pill sev-${p.severity}">${p.severity}</span>` : html`<button class="btn small" data-act="ack" data-id="${p.id}">Acknowledge</button>`}</div>`)
           : html`<p class="muted">No open problems on this device.</p>`}
       </section>
-      <section class="panel"><div class="panel-head"><h2>Interfaces</h2><span class="more muted">${st.det.polled ? `polled ${ago(st.det.polled)}` : "not polled yet"}</span></div>
-        ${interfaces.length ? html`<div class="scroll-x"><table class="table"><thead><tr><th>Port</th><th>Link</th><th>In</th><th>Out</th></tr></thead><tbody>
-          ${interfaces.map((i) => html`<tr><td>${i.name}</td><td><span class="state"><span class="led ${i.oper === "up" ? "green" : i.oper === "down" ? "red" : ""}"></span>${i.oper || ""}</span></td>
-            <td>${bytes(i.in)}</td><td>${bytes(i.out)}</td></tr>`)}</tbody></table></div>`
-          : html`<p class="muted">Interface status appears after the first SNMP poll of a pre-configured device.</p>`}
+      <section class="panel"><div class="panel-head"><h2>Ports</h2><span class="more muted">${st.det.polled ? `polled ${ago(st.det.polled)}` : "not polled yet"}</span></div>
+        ${interfaces.length ? html`<div class="scroll-x"><table class="table ports-table"><thead><tr><th>Port</th><th>Description</th><th>Link</th><th>Speed</th>
+            <th title="Bits per second since the last poll">In</th><th title="Bits per second since the last poll">Out</th><th>Errors</th><th></th></tr></thead><tbody>
+          ${interfaces.map((i) => html`<tr>
+            <td>${i.name}${i.kind === "uplink" ? html` <span class="kind-tag">uplink</span>` : i.kind === "oob" ? html` <span class="kind-tag">OOB mgmt</span>` : ""}</td>
+            <td class="sub">${i.alias || ""}</td>
+            <td>${linkState(i)}</td>
+            <td class="sub">${speed(i.speed)}</td>
+            <td>${bps(i.in_bps)}</td><td>${bps(i.out_bps)}</td>
+            <td class="${i.errors ? "warn-text" : "sub"}">${i.errors ?? ""}</td>
+            <td>${i.kind === "other" ? "" : i.protected ? html`<span class="sub" title="${i.protected}">in use by PandoraBox</span>`
+              : html`<button class="btn small" data-act="port" data-port="${i.name}" data-up="${i.admin === "down" ? "1" : ""}">${i.admin === "down" ? "Enable" : "Shut"}</button>`}</td></tr>`)}
+          </tbody></table></div>`
+          : html`<p class="muted">Ports appear after the first SNMP poll of a pre-configured device.</p>`}
       </section>
     </div>
     <div class="grid"><section class="panel"><h2>Details</h2>
@@ -189,15 +245,75 @@ function overview(st) {
         <dt>Role</dt><dd>${ROLE_LABEL[d.role] || d.role || ""}</dd>
         <dt>Delivery</dt><dd>${PATH_LABEL[d.path] || d.path || ""}</dd>
         <dt>Found via</dt><dd>${d.source || ""} ${d.console_port || d.mac || ""}</dd>
+        ${st.det.behind ? html`<dt>Plugged into</dt><dd><a href="#/devices/${st.det.behind.switch}">${st.det.behind.switch_name}</a> ${st.det.behind.port}</dd>` : ""}
         <dt>Reachability</dt><dd>${reachTag(d) || html`<span class="muted">not monitored yet</span>`}</dd>
         <dt>CPU (5 min)</dt><dd>${st.det.cpu != null ? `${st.det.cpu}%` : "unknown"}</dd>
+        ${health(st.det.health)}
         <dt>Backups</dt><dd>${st.det.backups}${st.det.last_backup ? `, last ${ago(st.det.last_backup)}` : ""}</dd>
         <dt>Compliance</dt><dd>${st.det.compliance ? (st.det.compliance.compliant ? "Compliant" : "Drifted") : "Not checked"}</dd>
         <dt>Note</dt><dd>${d.note || ""}</dd>
       </dl>
     </section>
-    ${access(st)}</div>
-  </div>`;
+    ${access(st)}${backbonePanel(st)}</div>
+  </div>
+  ${st.bb?.active ? backboneTable(st) : ""}`;
+}
+
+// ---- provisioning backbone (backbone.py) --------------------------------------------------------
+function backbonePanel(st) {
+  const d = st.det.device;
+  if (d.role !== "switch_access" || d.state !== "provisioned") return "";
+  const on = (st.det.backbone || []).length;
+  return html`<section class="panel"><h2>Provisioning backbone</h2>
+    ${on ? html`<p>${on} port${on > 1 ? "s" : ""} on the provisioning network: a new box plugged in there reaches PandoraBox
+        (DHCP, PnP, AutoInstall) as if it were cabled to this PC, and shows up in Devices.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" data-act="bb-scan">Who is plugged in</button>
+          <button class="btn" data-act="bb-add">Add ports…</button><button class="btn" data-act="bb-stop">Stop</button></div>`
+      : html`<p class="muted">Keep this PC cabled to this switch and plug new boxes into its free ports instead of into the PC:
+        their ports join the provisioning network, and this switch's CDP and MAC tables say which box is on which port.</p>
+        <button class="btn" data-act="bb-add">Use as provisioning backbone…</button>`}
+  </section>`;
+}
+
+function backboneTable(st) {
+  return html`<section class="panel" style="margin-top:16px"><div class="panel-head"><h2>Provisioning ports</h2>
+      <span class="more muted">read ${ago(st.bb.ts)} from this switch's CDP and MAC tables</span></div>
+    <div class="scroll-x"><table class="table"><thead><tr><th>Port</th><th>Link</th><th>Plugged in</th><th>Its port</th><th>Seen as</th></tr></thead><tbody>
+    ${st.bb.ports.map((p) => html`<tr><td>${p.port}</td>
+      <td><span class="state"><span class="led ${p.link === "up" ? "green" : ""}"></span>${p.link || ""}</span></td>
+      <td>${p.device ? html`<a href="#/devices/${p.device.id}">${deviceName(p.device)}</a> ${stateBadge(p.device.state)}`
+        : p.macs.length || p.cdp ? html`<span class="muted">not in the inventory yet</span>` : html`<span class="muted">empty</span>`}</td>
+      <td class="sub">${p.cdp?.port || ""}</td>
+      <td class="sub">${[p.cdp?.name, p.cdp?.platform, ...p.macs].filter(Boolean).join(", ")}</td></tr>`)}
+    </tbody></table></div></section>`;
+}
+
+async function backboneDialog(st, done) {
+  const r0 = await attempt(() => api.get(`/api/devices/${st.id}/backbone`, { candidates: 1 })); // free ports, read now
+  if (!r0) return;
+  const cands = r0.candidates || [];
+  if (!cands.length) {
+    await dialog({ title: "No free ports", body: html`<p>Every front-panel port of this switch is taken: PandoraBox's own port,
+      uplinks, management links or trunks. Free one, then try again.</p>`, actions: [{ label: "Close", value: false }] });
+    return;
+  }
+  const r = await dialog({
+    title: "Ports for new boxes",
+    body: html`<p>The ticked ports join the provisioning network (PandoraBox's management VLAN, portfast, enabled).
+      Uplinks and PandoraBox's own port are not offered; ports facing a configured device start unticked.</p>
+      <div class="list-select" style="max-height:320px;overflow:auto">${cands.map((c) => html`<label>
+        <input type="checkbox" name="p:${c.port}" ${c.suggest ? "checked" : ""}>
+        <span>${c.port}</span><span class="sub">${c.why || [c.neighbor, c.platform].filter(Boolean).join(", ")}</span></label>`)}</div>`,
+    actions: [{ label: "Cancel", value: false }, { label: "Configure these ports", value: true, kind: "primary" }],
+  });
+  if (!r.value) return;
+  const ports = Object.keys(r.form).filter((k) => k.startsWith("p:")).map((k) => k.slice(2));
+  if (await attempt(() => api.post(`/api/devices/${st.id}/backbone`, { ports, confirm: true }), `${ports.length} provisioning port(s) configured`)) await done();
+}
+
+async function backboneScan(st, draw) {
+  const r = await attempt(() => api.get(`/api/devices/${st.id}/backbone`));
+  if (r) { st.bb = { ...r, ts: Date.now() / 1000 }; draw(); }
 }
 
 // How PandoraBox logs in. Telnet is a per-box exception (an IOS image without crypto has no SSH): allowed by the

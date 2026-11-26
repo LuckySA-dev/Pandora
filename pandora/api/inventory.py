@@ -8,7 +8,7 @@ from collections import Counter
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 
-from .. import alerts, alloc, backup, compliance, hostkeys, monitor, upgrade
+from .. import alerts, alloc, backbone, backup, compliance, hostkeys, monitor, ports, status, upgrade
 
 FILTERS = ("state", "path", "role", "source", "os_type")
 SEARCH = ("hostname", "alloc_hostname", "serial", "pid", "ip", "mgmt_ip", "mac", "console_port", "version")
@@ -35,6 +35,7 @@ def _ip_key(v):
 SORTS = {
     "name": lambda d: (d.get("hostname") or d.get("alloc_hostname") or d.get("serial") or "~").lower(),
     "state": lambda d: _STATE.get(d["state"], 99),
+    "status": lambda d: status.ORDER.index(d["status"]) if d.get("status") in status.ORDER else 99,
     "severity": lambda d: -_SEV.get(d.get("severity") or "", -1),
     "pid": lambda d: (d.get("pid") or "~").lower(),
     "ip": lambda d: _ip_key(d.get("ip") or d.get("mgmt_ip") or ""),  # the address in use, as the Bench shows it
@@ -58,6 +59,7 @@ def device_rows(ctx, q="", **filters):
         last = monitor.LAST.get(d["id"], {})
         d.update(severity=worst.get(d["id"]), compliant=comp.get(d["id"]), polled=last.get("_ts"),
                  ports_up=last.get("_up", 0), ports_total=last.get("_total", 0))
+        d["status"] = status.of(d, d["severity"], d["compliant"], last)
         rows.append(d)
     return rows
 
@@ -121,18 +123,118 @@ def router(ctx):
             return err
         d = ctx.db.devices(device_id)[0]
         last = monitor.LAST.get(device_id, {})
-        ifaces = sorted({k[:-5] for k in last if k.endswith(":oper")})
+        comp = compliance.get(ctx.db, device_id)
+        d["status"] = status.of(d, alerts.worst(ctx.db).get(device_id), comp["compliant"] if comp else None, last)
+        names = sorted({k[:-5] for k in last if k.endswith(":oper")}, key=ports.sort_key)
+        kinds = ports.classify(names, d["pid"])
+        guard = protected_ports(device_id)
+
+        def port(i):
+            errs = [last.get(f"{i}:{x}") for x in ("inerr", "outerr")]
+            return {"name": i, "kind": kinds.get(i, "other"), "oper": last.get(f"{i}:oper"),
+                    "admin": last.get(f"{i}:admin"), "speed": last.get(f"{i}:speed"), "alias": last.get(f"{i}:alias"),
+                    "in": last.get(f"{i}:in"), "out": last.get(f"{i}:out"),
+                    "in_bps": last.get(f"{i}:in_bps"), "out_bps": last.get(f"{i}:out_bps"),
+                    "errors": sum(int(e) for e in errs if str(e).isdigit()) if any(errs) else None,
+                    "protected": guard.get(alloc.normalize_if(i))}
         return {
             "device": d,
-            "interfaces": [{"name": i, "oper": last.get(f"{i}:oper"), "in": last.get(f"{i}:in"),
-                            "out": last.get(f"{i}:out")} for i in ifaces],
+            "interfaces": [port(i) for i in names],
+            "health": {"mem_pct": last.get("mem_pct"), "uptime": last.get("uptime"),
+                       "env": [{"kind": k.split(":", 2)[1], "name": k.split(":", 2)[2], "state": v,
+                                "value": last.get(f"temp:{k.split(':', 2)[2]}")}
+                               for k, v in sorted(last.items()) if k.startswith("env:")]},
             "cpu": last.get("cpu5min"), "polled": last.get("_ts"),
             "problems": alerts.open_problems(ctx.db, device_id),
             "compliance": compliance.get(ctx.db, device_id),
             "backups": len(ctx.db.q("SELECT id FROM backups WHERE device_id=?", device_id)),
             "last_backup": (backup.latest(ctx.db, device_id) or {}).get("ts"),
             "access": {k: ctx.db.vars(device_id).get(k) for k in ("telnet", "cap_ssh", "upgrade")},
+            "backbone": backbone.active(ctx, device_id),
+            "behind": behind(device_id),
         }
+
+    def behind(device_id):
+        """The provisioning backbone port this box is plugged into, if a backbone saw it."""
+        b = ctx.db.vars(device_id).get("behind")
+        sw = b and ctx.db.device(b["switch"])
+        return {**b, "switch_name": sw["hostname"] or f"#{sw['id']}"} if sw else None
+
+    @r.get("/devices/{device_id}/backbone")
+    def backbone_get(device_id: int, candidates: bool = False):
+        """A backbone: who is on each provisioning port now. Another switch (or `candidates`): the free ports."""
+        if err := missing(device_id):
+            return err
+        try:
+            if backbone.active(ctx, device_id) and not candidates:
+                return {"active": True, "ports": backbone.scan(ctx, device_id)}
+            return {"active": False, "candidates": backbone.candidates(ctx, device_id)}
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, 400)
+        except Exception as e:
+            return JSONResponse({"error": f"{type(e).__name__}: {e}"[:400]}, 502)
+
+    @r.post("/devices/{device_id}/backbone")
+    def backbone_on(device_id: int, body: dict):
+        """Make these free front-panel ports provisioning ports (VLAN 99, portfast, up): pushed and saved."""
+        if err := missing(device_id):
+            return err
+        if body.get("confirm") is not True:
+            return JSONResponse({"error": "confirm: true required"}, 400)
+        try:
+            return {"ok": True, "ports": backbone.enable(ctx, device_id, [str(p) for p in body.get("ports") or []])}
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, 400)
+        except Exception as e:
+            return JSONResponse({"error": f"{type(e).__name__}: {e}"[:400]}, 502)
+
+    @r.post("/devices/{device_id}/backbone/stop")
+    def backbone_off(device_id: int, body: dict):
+        if err := missing(device_id):
+            return err
+        if body.get("confirm") is not True:
+            return JSONResponse({"error": "confirm: true required: its provisioning ports go back to defaults"}, 400)
+        try:
+            return {"ok": True, "ports": backbone.disable(ctx, device_id)}
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, 400)
+        except Exception as e:
+            return JSONResponse({"error": f"{type(e).__name__}: {e}"[:400]}, 502)
+
+    def protected_ports(device_id) -> dict[str, str]:
+        """Ports PandoraBox reaches the box through: shutting one would cut it off. {normalized name: why}."""
+        out = {alloc.normalize_if(r["port"]): "PandoraBox's management port"
+               for r in ctx.db.q("SELECT port FROM reserved_ports WHERE device_id=?", device_id)}
+        for row in ctx.db.q("SELECT lines FROM mgmt_config WHERE device_id=?", device_id):
+            for ln in row["lines"].splitlines():
+                if ln.startswith("interface ") and ports.parse(ln.split(None, 1)[1].split(".")[0]):
+                    out.setdefault(alloc.normalize_if(ln.split(None, 1)[1].split(".")[0]), "a management network link")
+        if seen := ctx.db.vars(device_id).get("seen_port"):
+            out.setdefault(alloc.normalize_if(seen), "the port it reaches PandoraBox on")
+        return out
+
+    @r.post("/devices/{device_id}/ports/admin")
+    def port_admin(device_id: int, body: dict):
+        """Shut a port or bring it back (`shutdown` / `no shutdown` over SSH, saved). Never a port PandoraBox needs
+        to reach the box. An explicit yes, like every change pushed to a device."""
+        if err := missing(device_id):
+            return err
+        if body.get("confirm") is not True:
+            return JSONResponse({"error": "confirm: true required"}, 400)
+        name, up = str(body.get("port") or "").strip(), body.get("up") is True
+        if not ports.parse(name):
+            return JSONResponse({"error": f"{name!r} is not a physical port"}, 400)
+        if why := protected_ports(device_id).get(alloc.normalize_if(name)):
+            return JSONResponse({"error": f"{name} is {why}: shutting it would cut PandoraBox off"}, 400)
+        dev = ctx.db.device(device_id)
+        try:
+            out = ctx.ssh_config(dev, [f"interface {name}", " no shutdown" if up else " shutdown"])
+        except Exception as e:
+            return JSONResponse({"error": f"{type(e).__name__}: {e}"[:400]}, 502)
+        if bad := [ln.strip() for ln in out.splitlines() if ln.strip().startswith("%")]:
+            return JSONResponse({"error": "; ".join(bad)}, 502)
+        ctx.db.audit("user", "port:" + ("up" if up else "shut"), {"id": device_id, "port": name})
+        return {"ok": True, "port": name, "up": up}
 
     @r.patch("/devices/{device_id}")
     def edit_device(device_id: int, body: dict):

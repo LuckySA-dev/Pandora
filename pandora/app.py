@@ -38,7 +38,8 @@ def create_app(ctx, background=True) -> FastAPI:
                 snmp.start_receiver(ctx.cfg, lambda src, name, vbs: monitor.on_trap(ctx, src, name, vbs))
             except Exception as e:
                 log.warning("SNMP inform receiver not started: %s", e)
-            tasks += [asyncio.create_task(monitor.poll_forever(ctx)), asyncio.create_task(monitor.backup_forever(ctx))]
+            tasks += [asyncio.create_task(monitor.poll_forever(ctx)), asyncio.create_task(monitor.backup_forever(ctx)),
+                      asyncio.create_task(monitor.backbones_forever(ctx))]
         yield
         for t in tasks:
             t.cancel()

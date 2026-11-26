@@ -8,7 +8,8 @@ import time
 from .alloc import normalize_if
 
 SEVERITIES = ("info", "warning", "average", "high", "disaster")
-CPU_HIGH = 80          # % (5 min), like Zabbix's default "High CPU utilization" trigger
+CPU_HIGH = 80
+MEM_HIGH = 90          # % of the processor memory pool          # % (5 min), like Zabbix's default "High CPU utilization" trigger
 UNREACHABLE_AFTER = 3  # consecutive failed polls
 
 _fails: dict[int, int] = {}
@@ -75,8 +76,11 @@ def on_sample(ctx, device, sample: dict, prev: dict | None):
         port = k[:-5]
         key = f"if:{normalize_if(port)}"
         was_up = prev is not None and prev.get(k) == "up"
+        shut = sample.get(f"{port}:admin") == "down"  # someone shut it on purpose: not a fault
         if v == "down" and normalize_if(port) in reserved:
-            raise_(ctx, did, key, "high", f"Management port {port} is down")
+            raise_(ctx, did, key, "high", f"Management port {port} is {'shut down' if shut else 'down'}")
+        elif shut:
+            resolve(ctx, did, key)
         elif v == "down" and was_up:
             raise_(ctx, did, key, "warning", f"Interface {port} went down")
         elif v == "up":
@@ -86,6 +90,22 @@ def on_sample(ctx, device, sample: dict, prev: dict | None):
     up, was = str(sample.get("uptime", "")), str((prev or {}).get("uptime", ""))
     if up.isdigit() and was.isdigit() and int(up) < int(was):
         raise_(ctx, did, "reboot", "info", f"Device restarted (uptime now {int(up) // 6000} min)")
+    for k, v in sample.items():  # fans, power supplies, temperature sensors (CISCO-ENVMON-MIB)
+        if k.startswith("env:"):
+            _, kind, name = k.split(":", 2)
+            label = {"temp": "Temperature sensor", "fan": "Fan", "psu": "Power supply"}.get(kind, kind)
+            if v == "warning":
+                raise_(ctx, did, k, "warning", f"{label} {name}: warning")
+            elif v in ("critical", "shutdown", "notFunctioning"):
+                raise_(ctx, did, k, "high", f"{label} {name}: {v}")
+            else:
+                resolve(ctx, did, k)
+    mem = str(sample.get("mem_pct", ""))
+    if mem.isdigit():
+        if int(mem) >= MEM_HIGH:
+            raise_(ctx, did, "mem", "average", f"Memory {mem}% used")
+        else:
+            resolve(ctx, did, "mem")
     cpu = sample.get("cpu5min")
     if cpu is not None and str(cpu).isdigit():
         if int(cpu) >= CPU_HIGH:
@@ -112,12 +132,13 @@ def on_poll_failed(ctx, device):
            f"Offline: no SNMP answer {since}. Not cabled to this PC right now, or powered off?")
 
 
-def on_trap(ctx, device, name, varbinds):
+def on_trap(ctx, device, name, varbinds, port=None):
     if device is None:
         return
     ifindex = next((v for n, v in varbinds if n.startswith("1.3.6.1.2.1.2.2.1.1.")), "?")
     if name == "linkDown":
-        raise_(ctx, device["id"], f"trap:if{ifindex}", "warning", f"linkDown trap (ifIndex {ifindex})")
+        what = f"Port {port}" if port else f"Port with ifIndex {ifindex}"
+        raise_(ctx, device["id"], f"trap:if{ifindex}", "warning", f"{what} went down (linkDown inform)")
     elif name == "linkUp":
         resolve(ctx, device["id"], f"trap:if{ifindex}")
     elif name == "coldStart":

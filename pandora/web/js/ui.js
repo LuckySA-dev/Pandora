@@ -28,13 +28,28 @@ export const STATES = ["discovered", "identified", "needs_credentials", "queued"
 export const STATE_LABEL = {
   discovered: "Discovered", identified: "Identified", needs_credentials: "Needs login", queued: "Queued",
   provisioning: "Configuring", provisioned: "Ready", failed: "Failed",
+  // a configured box, as monitoring sees it now (status.py): Ready only when it answers and is healthy
+  ready: "Ready", offline: "Offline", degraded: "Degraded", restarted: "Just restarted", drifted: "Config drifted",
+  configured: "Configured",
+};
+const STATUS_HINT = {
+  ready: "Configured, answers SNMP, no serious problem",
+  offline: "Stopped answering SNMP: unplugged, powered off, or not cabled to this PC right now",
+  degraded: "Answers, but has an open problem of severity average or worse",
+  restarted: "Came back from a restart in the last 15 minutes",
+  drifted: "Its running config no longer matches what PandoraBox expects",
+  configured: "Pre-configured; SNMP hasn't answered yet, so it isn't proven ready",
 };
 export const PATH_LABEL = { pnp: "PnP", ztp: "ZTP", autoinstall: "AutoInstall", console: "Console", ssh: "SSH" };
 export const ROLE_LABEL = { switch_access: "Access switch", router_edge: "Edge router" };
 
+// state: a provisioning state, or a device's live status (d.status from the API, see status.py)
 export function stateBadge(state) {
-  const led = { provisioned: "green", failed: "red", needs_credentials: "amber", queued: "amber", provisioning: "amber blink" }[state] || "";
-  return html`<span class="state"><span class="led ${led}"></span>${STATE_LABEL[state] || state}</span>`;
+  const led = {
+    provisioned: "green", ready: "green", failed: "red", offline: "red", degraded: "red", needs_credentials: "amber",
+    queued: "amber", provisioning: "amber blink", restarted: "amber", drifted: "amber",
+  }[state] || "";
+  return html`<span class="state" title="${STATUS_HINT[state] || ""}"><span class="led ${led}"></span>${STATE_LABEL[state] || state}</span>`;
 }
 // Reachability of a pre-configured device, from SNMP (monitor.py): a status next to the state, not a problem.
 export function reachTag(d) {

@@ -1,0 +1,50 @@
+# Provisioning backbone lab: the PC (PandoraBox) has one LAN card, cabled to the switch `bb`; two factory-blank
+# routers are cabled to bb's other ports, not to the PC. After bb is onboarded and made the provisioning backbone
+# (device page -> Provisioning backbone), its free ports join the provisioning VLAN and the blank boxes reach
+# PandoraBox's DHCP + PnP through it.
+#   wsl -d Debian -- sleep infinity      (keep open, see small.clab.yml)
+#   CLAB_LABDIR_BASE=$HOME/clab containerlab deploy -t lab/backbone.clab.yml --reconfigure
+#   docker exec -i clab-pandora-bb-pandora bash < lab/backbone-pandora.sh     (console relay + app with DHCP)
+#   UI: http://localhost:8099   bb: Add by IP 172.30.34.10, admin / admin (containerlab's login)
+#   CLAB_LABDIR_BASE=$HOME/clab containerlab destroy -t lab/backbone.clab.yml --cleanup
+name: pandora-bb
+
+mgmt:
+  network: pandora-bb-mgmt
+  ipv4-subnet: 172.30.34.0/24
+
+topology:
+  nodes:
+    pandora:
+      kind: linux
+      image: pandorabox-dev:latest
+      mgmt-ipv4: 172.30.34.2
+      binds:
+        - /mnt/c/Users/User/Desktop/Coding/Pandora:/app
+      ports:
+        - 127.0.0.1:8099:8099   # the UI from Windows
+      exec:
+        - ip addr add 10.99.0.1/24 dev eth1   # the PC's single LAN card, in bb's port Ethernet0/1
+    bb:   # the switch that becomes the provisioning backbone (configured by containerlab: SSH admin / admin)
+      kind: cisco_iol
+      type: L2
+      image: vrnetlab/cisco_iol:L2-17.18.02
+      mgmt-ipv4: 172.30.34.10
+    blank1:   # factory-blank router: no config, fresh NVRAM, asks for DHCP as a PnP client on e0/0
+      kind: linux
+      image: vrnetlab/cisco_iol:17.18.02
+      mgmt-ipv4: 172.30.34.61
+      env: {IOL_PID: "61", CONSOLE_RELAY: "172.30.34.2"}
+      binds: [/mnt/c/Users/User/Desktop/Coding/Pandora/lab/ztp/blank.sh:/blank.sh:ro]
+      entrypoint: /bin/bash /blank.sh
+    blank2:
+      kind: linux
+      image: vrnetlab/cisco_iol:17.18.02
+      mgmt-ipv4: 172.30.34.62
+      env: {IOL_PID: "62", CONSOLE_RELAY: "172.30.34.2"}
+      binds: [/mnt/c/Users/User/Desktop/Coding/Pandora/lab/ztp/blank.sh:/blank.sh:ro]
+      entrypoint: /bin/bash /blank.sh
+  links:
+    - endpoints: ["pandora:eth1", "bb:Ethernet0/1"]
+    - endpoints: ["blank1:eth1", "bb:Ethernet0/2"]
+    - endpoints: ["blank2:eth1", "bb:Ethernet0/3"]

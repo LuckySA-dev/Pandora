@@ -449,3 +449,62 @@ def test_the_wizard_cannot_write_learned_facts_or_allow_telnet(ctx):
     v = ctx.db.vars(d["id"])
     assert "telnet" not in v and "ops_retired" not in v and v["cap_ssh"] is True and v["seen_port"] == "Gi1/0/48"
     assert v["vlans"] == [{"id": "10", "name": "U"}]
+
+
+def test_uplink_and_fiber_ports_are_told_apart_from_the_front_panel():
+    from pandora.ports import classify
+    c9300 = [f"Gi1/0/{i}" for i in range(1, 49)] + [f"Gi1/1/{i}" for i in range(1, 5)] + \
+        [f"Te1/1/{i}" for i in range(1, 9)] + ["Gi0/0", "Vl1", "Ap1/0/1", "Gi1/0/5.10"]
+    k = classify(c9300, "C9300-48P")
+    assert k["Gi1/0/1"] == k["Gi1/0/48"] == "access" and k["Gi1/1/4"] == k["Te1/1/8"] == "uplink"
+    assert k["Gi0/0"] == "oob" and "Vl1" not in k and "Ap1/0/1" not in k and "Gi1/0/5.10" not in k
+    c3560 = [f"GigabitEthernet0/{i}" for i in range(1, 53)]  # 48 copper + 4 SFP on one numbering
+    k = classify(c3560, "WS-C3560G-48TS-E")
+    assert k["GigabitEthernet0/48"] == "access" and k["GigabitEthernet0/49"] == k["GigabitEthernet0/52"] == "uplink"
+    c2960 = [f"Fa0/{i}" for i in range(1, 25)] + ["Gi0/1", "Gi0/2"]  # dual-purpose GE uplinks on a FE switch
+    k = classify(c2960, "WS-C2960-24TT-L")
+    assert k["Fa0/24"] == "access" and k["Gi0/1"] == k["Gi0/2"] == "uplink"
+    iol = [f"Et{s}/{p}" for s in range(2) for p in range(4)]  # IOL: equal slots, no uplinks
+    assert set(classify(iol, "Unix").values()) == {"access"}
+    assert classify(["Gi0/0", "Gi0/1", "Gi0/2"], "CISCO2911/K9") == dict.fromkeys(["Gi0/0", "Gi0/1", "Gi0/2"], "access")
+
+
+def test_status_follows_what_monitoring_sees():
+    from pandora import status
+    prov = {"state": "provisioned", "reach": "online"}
+    assert status.of({"state": "queued"}) == "queued"
+    assert status.of({**prov, "reach": None}) == "configured"  # configured, never answered SNMP: not Ready yet
+    assert status.of({**prov, "reach": "offline"}, "disaster") == "offline"  # lost the signal: Offline, not Ready
+    assert status.of(prov, last={"uptime": "60000"}) == "restarted"  # 10 min of uptime
+    assert status.of(prov, "high", last={"uptime": "9000000"}) == "degraded"
+    assert status.of(prov, "warning", False, {"uptime": "9000000"}) == "drifted"
+    assert status.of(prov, "warning", True, {"uptime": "9000000"}) == "ready"
+
+
+def test_port_rates_and_shut_ports_are_not_alarms(ctx):
+    from pandora import alerts, monitor
+    assert monitor.rates({"Gi1/0/1:in": "2000", "Gi1/0/1:out": "50"}, {"_ts": 100, "Gi1/0/1:in": "1000",
+                                                                       "Gi1/0/1:out": "100"}, 110) == {"Gi1/0/1:in_bps": 800}
+    d = add(ctx, 96)
+    up = {"Gi1/0/5:oper": "up", "Gi1/0/5:admin": "up"}
+    alerts.on_sample(ctx, d, {"Gi1/0/5:oper": "down", "Gi1/0/5:admin": "down"}, up)  # shut by hand
+    alerts.on_sample(ctx, d, {"env:fan:Fan 1": "critical", "mem_pct": "95"}, up)
+    keys = {p["key"]: p for p in alerts.open_problems(ctx.db, d["id"])}
+    assert "if:GigabitEthernet1/0/5" not in keys
+    assert keys["env:fan:Fan 1"]["severity"] == "high" and keys["mem"]["severity"] == "average"
+    alerts.on_sample(ctx, d, {"Gi1/0/5:oper": "down", "Gi1/0/5:admin": "up"}, up)  # went down by itself
+    assert any(p["key"] == "if:GigabitEthernet1/0/5" for p in alerts.open_problems(ctx.db, d["id"]))
+
+
+def test_backbone_reads_who_is_on_which_port_from_the_mac_table(ctx):
+    from pandora import backbone
+    ios = ("          Mac Address Table\n-------------------------------------------\n\nVlan    Mac Address       Type"
+           "        Ports\n----    -----------       --------    -----\n  99    aabb.cc00.2900    DYNAMIC     Et0/2\n"
+           "  99    0024.97b1.8c40    DYNAMIC     Gi1/0/5\nTotal Mac Addresses for this criterion: 2\n")
+    assert backbone.parse_macs(ios) == {"Ethernet0/2": ["aa:bb:cc:00:29:00"], "GigabitEthernet1/0/5": ["00:24:97:b1:8c:40"]}
+    lines = backbone.lines_for(["GigabitEthernet1/0/5"], 99)
+    assert lines[0] == "cdp run" and " switchport access vlan 99" in lines and " spanning-tree portfast" in lines
+    d = add(ctx, 97)  # what compliance expects once a switch is a backbone
+    ctx.db.set_vars(d["id"], {"backbone_ports": ["GigabitEthernet1/0/5"]})
+    text, _, _ = ctx.render(d["id"])
+    assert "interface GigabitEthernet1/0/5\n description PANDORA-PROVISION\n switchport mode access\n" in text

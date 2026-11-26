@@ -26,7 +26,7 @@ export async function mount(root, params) {
     { label: () => html`<input type="checkbox" data-selall aria-label="Select all on this page" ${st.page.length && st.page.every((d) => st.selected.has(d.id)) ? "checked" : ""}>`,
       width: "36px", render: (d) => html`<input type="checkbox" data-sel="${d.id}" aria-label="Select ${deviceName(d)}" ${st.selected.has(d.id) ? "checked" : ""}>` },
     { label: "Device", sort: "name", render: (d) => html`<a href="#/devices/${d.id}">${deviceName(d)}</a><div class="sub">${d.pid || "model unknown"}${d.serial ? `, ${d.serial}` : ""}</div>` },
-    { label: "State", sort: "state", render: (d) => html`${stateBadge(d.state)}${reachTag(d)}${d.note ? html`<div class="sub clip" title="${d.note}">${d.note}</div>` : ""}` },
+    { label: "State", sort: "status", render: (d) => html`${stateBadge(d.status || d.state)}${d.status === "offline" ? reachTag(d) : ""}${d.note ? html`<div class="sub clip" title="${d.note}">${d.note}</div>` : ""}` },
     { label: "Found via", render: (d) => html`${d.source || ""}<div class="sub">${d.console_port || d.mac || ""}</div>` },
     { label: "Delivery", sort: "path", render: (d) => html`<select data-path="${d.id}" aria-label="Delivery path">${Object.entries(PATH_LABEL).map(([k, v]) => html`<option value="${k}" ${d.path === k ? "selected" : ""}>${v}</option>`)}</select>` },
     { label: "Role", sort: "role", render: (d) => html`<select data-role="${d.id}" aria-label="Role">${Object.entries(ROLE_LABEL).map(([k, v]) => html`<option value="${k}" ${d.role === k ? "selected" : ""}>${v}</option>`)}</select>` },
