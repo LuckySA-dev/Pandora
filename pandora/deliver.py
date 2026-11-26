@@ -146,14 +146,16 @@ class Ctx:
         self.db.set_state(device_id, "queued", "credentials received")
         self.push_async(device_id)
 
-    def add_by_ssh(self, ip, creds) -> dict:
-        """Add an already-configured device by address + login (no SNMP needed): log in, read what it is."""
+    def add_by_ssh(self, ip, creds, telnet=False) -> dict:
+        """Add an already-configured device by address + login (no SNMP needed): log in, read what it is.
+        telnet: the user says this box has no SSH (IOS without crypto); the login then goes in cleartext."""
 
         from .identify import parse_inventory
-        params = {"device_type": "cisco_ios", "host": ip, "username": creds["username"], "password": creds["password"],
+        params = {"device_type": "cisco_ios_telnet" if telnet else "cisco_ios", "host": ip,
+                  "username": creds["username"], "password": creds["password"],
                   "secret": creds.get("secret") or creds["password"], "fast_cli": False, "conn_timeout": 10}
         known = self.db.find(ip=ip)
-        pin = hostkeys.Pin(self, known and known["id"])
+        pin = None if telnet else hostkeys.Pin(self, known and known["id"])
         with connect(params, pin) as conn:
             conn.enable()
             ver = conn.send_command("show version")
@@ -163,19 +165,30 @@ class Ctx:
         # Known by serial at a new address: its identity is known only now. Check the pin before anything about
         # that device changes (address, path, credentials): a box claiming its serial with another key gets nothing.
         same = self.db.find(serial=facts.get("serial"), ip=ip)
-        if same and pin.seen and (want := hostkeys.pinned(self.db, same["id"])) and want != pin.seen:
+        if same and pin and pin.seen and (want := hostkeys.pinned(self.db, same["id"])) and want != pin.seen:
             raise hostkeys.HostKeyChanged(hostkeys.mismatch(self, same["id"], ip, " (added by IP)"))
         dev = self.db.upsert(ip=ip, source="ssh", path="ssh", hostname=hostname, **facts)
         if dev["path"] != "ssh":
             self.db.x("UPDATE devices SET path='ssh' WHERE id=?", dev["id"])
         access.CREDS[dev["id"]] = creds
-        if pin.seen:
+        if pin and pin.seen:
             hostkeys.remember(self.db, dev["id"], pin.seen)
+        if telnet:
+            self.allow_telnet(dev["id"], True, "added by IP over Telnet")
         self.db.audit("user", "added_by_ssh", {"id": dev["id"], "ip": ip})
         self.check_confreg(dev["id"], ver)
         dev = self.db.device(dev["id"])
         self.emit("device", dev)
         return dev
+
+    def allow_telnet(self, device_id, allow: bool, why: str):
+        """Per-box opt-in, off by default: Telnet sends the login in cleartext, so it is for boxes on the isolated
+        provisioning segment whose image can't run SSH, until they get a K9 image (upgrade.py)."""
+        v = self.db.vars(device_id)
+        v.pop("telnet", None)
+        self.db.set_vars(device_id, {**v, "telnet": True} if allow else v)
+        self.db.audit("user", "telnet:" + ("allow" if allow else "off"), {"id": device_id, "why": why})
+        self.emit("device", self.db.device(device_id))
 
     def creds_for(self, dev) -> dict:
         return access.CREDS.get(dev["id"]) or {"username": self.cfg["admin_user"],
@@ -312,7 +325,8 @@ class Ctx:
             # the boot file has `transport input ssh`: telnet still open = the box refused the SSH lines. Real 2960
             # with a non-crypto image (no K9): config applied, address answering, SSH impossible.
             why = (": telnet answers there but SSH doesn't, so the box refused the SSH lines. Its IOS most likely has "
-                   "no crypto (image name without K9, see `show version`); it needs a K9 image")
+                   "no crypto (image name without K9, see `show version`). Allow Telnet for this box on its page, "
+                   "then upgrade it to a K9 image there")
         self.finish(device_id, method, False, f"no SSH on {a['mgmt_ip']} after {wait}s{why}")
 
     def finish(self, device_id, method, ok, detail):
@@ -322,7 +336,8 @@ class Ctx:
             old_ip = self.db.device(device_id)["ip"]
             # A merged (SSH) device was reached on its existing address. Only switch to the new mgmt IP once
             # PandoraBox can actually reach it; otherwise every later backup/poll/terminal would fail.
-            if method == "ssh" and old_ip and old_ip != a["mgmt_ip"] and not access.ssh_open(a["mgmt_ip"]):
+            if method == "ssh" and old_ip and old_ip != a["mgmt_ip"] and not self.reachable(self.db.device(device_id),
+                                                                                             a["mgmt_ip"]):
                 detail = f"{detail}; still using {old_ip} (new mgmt IP {a['mgmt_ip']} not reachable from here yet)"
                 self.db.x("UPDATE devices SET hostname=? WHERE id=?", a["hostname"], device_id)
             else:
@@ -563,13 +578,26 @@ class Ctx:
             errors = con.configure(text)
         self.finish(dev["id"], "console", not errors, "; ".join(errors) or "pasted + saved")
 
-    def netmiko_params(self, dev, ip=None):
+    def uses_telnet(self, dev, ip=None) -> bool:
+        """Telnet only where the user allowed it for this box (an IOS image without crypto has no SSH server) and
+        only while SSH doesn't answer: once a K9 image runs SSH, SSH is used even before Telnet is switched off."""
+        ip = ip or dev.get("ip")
+        return bool(ip and self.db.vars(dev["id"]).get("telnet") and not access.ssh_open(ip)
+                    and access.ssh_open(ip, 23))
+
+    def reachable(self, dev, ip=None) -> bool:
+        ip = ip or dev.get("ip")
+        return access.ssh_open(ip) or self.uses_telnet(dev, ip)
+
+    def netmiko_params(self, dev, ip=None, telnet=False):
         c = self.creds_for(dev)
-        return {"device_type": platforms.get(dev.get("os_type"))["netmiko"],
+        return {"device_type": "cisco_ios_telnet" if telnet else platforms.get(dev.get("os_type"))["netmiko"],
                 "host": ip or dev["ip"], "username": c["username"], "password": c["password"],
                 "secret": c.get("secret") or c["password"], "fast_cli": False}
 
     def session(self, dev):
+        if self.uses_telnet(dev):  # cleartext, allowed per box: no host key to pin
+            return connect(self.netmiko_params(dev, telnet=True))
         return connect(self.netmiko_params(dev), hostkeys.Pin(self, dev["id"]))
 
     def ssh_command(self, dev, cmd, use_textfsm=False):
@@ -607,8 +635,11 @@ class Ctx:
         return ver, caps
 
     def _push_ssh(self, dev):
-        if not access.ssh_open(dev["ip"]):
-            raise RuntimeError(f"SSH not reachable on {dev['ip']}")
+        if not self.reachable(dev):
+            telnet = access.ssh_open(dev["ip"], 23)
+            raise RuntimeError(f"SSH not reachable on {dev['ip']}" + (
+                ": telnet answers, so its IOS image most likely has no crypto (no K9). Allow Telnet for this box on "
+                "its page, then upgrade it to a K9 image there" if telnet else ""))
         out, caps = self.probe(dev)
         self.check_confreg(dev["id"], out)
         self.db.upsert(ip=dev["ip"], **{k: v for k, v in parse_show_version(out).items() if k != "hostname"})
@@ -671,10 +702,11 @@ class NeedCredentials(Exception):
     pass
 
 
-CAP_QUESTIONS = ("line vty 0", "snmp-server group PANDORA v3", "snmp-server enable traps", "ip routing")  # + " ?"
+CAP_QUESTIONS = ("line vty 0", "snmp-server group PANDORA v3", "snmp-server enable traps", "ip routing",
+                 "ip ssh")  # + " ?"
 
 
-def parse_caps(vty_help: str, group_help: str, traps_help: str, routing_help: str = "") -> dict:
+def parse_caps(vty_help: str, group_help: str, traps_help: str, routing_help: str = "", ssh_help: str = "") -> dict:
     """IOS `?` help -> template caps. Seen on containerlab IOL 17.18: vty only 0-4, the L2 image offers no
     'priv' (no AES), the router image no 'traps config'. Help we can't read keeps the default."""
     caps = {}
@@ -692,4 +724,10 @@ def parse_caps(vty_help: str, group_help: str, traps_help: str, routing_help: st
         caps["cap_ip_routing"] = True
     elif re.search(r"^\s*% (Invalid input detected|Unrecognized command)", routing_help, re.M):
         caps["cap_ip_routing"] = False
+    # An image without crypto (no K9 in its name: real 2960 / 3560 on the bench) has no `ip ssh` at all, so no
+    # SSH server: the template then leaves telnet on the vty lines (or the box would lock everyone out).
+    if re.search(r"^\s*% (Invalid input detected|Unrecognized command)", ssh_help, re.M):
+        caps["cap_ssh"] = False
+    elif re.search(r"^\s+version\s", ssh_help, re.M):
+        caps["cap_ssh"] = True
     return caps

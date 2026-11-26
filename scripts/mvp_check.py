@@ -9,6 +9,8 @@ textfsm, pysnmp, the SNMP inform receiver, the web terminal websocket and the ag
 Simulated devices use 127.0.0.x / 127.0.1.x source addresses so each one looks like its own host.
 """
 import asyncio
+import contextlib
+import hashlib
 import json
 import os
 import re
@@ -27,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 import httpx  # noqa: E402
 import paramiko  # noqa: E402
+import tftpy  # noqa: E402
 import uvicorn  # noqa: E402
 
 from pandora import access, config, console  # noqa: E402
@@ -48,15 +51,20 @@ RESULTS = []
 # Fake Cisco device
 # =====================================================================================
 class FakeIOS:
-    def __init__(self, name, pid, serial, xe=True, factory=True, user=None, password=None, cdp=None):
+    def __init__(self, name, pid, serial, xe=True, factory=True, user=None, password=None, cdp=None, k9=True,
+                 image=None, telnet=False):
         self.name, self.pid, self.serial, self.xe, self.factory = name, pid, serial, xe, factory
+        # k9=False: an image without crypto (real 2960 / 3560 on the bench): no `ip ssh`, no SSH server, Telnet only
+        self.k9, self.telnet = k9, telnet
+        self.image = image or ("cat9k_iosxe.17.09.04a.SPA.bin" if xe else "c2960x-universalk9-mz.152-7.E9.bin")
+        self.flash, self.boot, self.strict_keys = {}, None, not k9  # flash: name -> (size, md5)
         self.hostname = "Switch" if factory else name
         self.users = {user: password} if user else {}
         self.running = [] if factory else [f"hostname {name}", f"username {user} privilege 15 secret 9 $9$x",
                                            "interface Vlan1", " ip address 192.168.1.10 255.255.255.0",
                                            "interface GigabitEthernet1/0/47", " switchport mode trunk",
                                            "interface GigabitEthernet1/0/48", " switchport mode trunk"]
-        self.has_keys = not factory
+        self.has_keys = not factory and k9
         self.cdp = cdp or []
         self.snapshots = {}
         self.crypto_prompts = 0
@@ -68,9 +76,28 @@ class FakeIOS:
             return (f"Cisco IOS XE Software, Version 17.09.04a\r\nCisco IOS Software [Cupertino], Catalyst L3 Switch "
                     f"Software (CAT9K_IOSXE), Version 17.9.4a, RELEASE SOFTWARE (fc3)\r\n{self.hostname} uptime is 1 hour"
                     f"\r\nModel Number                       : {self.pid}\r\nSystem Serial Number               : {self.serial}")
-        return (f"Cisco IOS Software, C2960X Software (C2960X-UNIVERSALK9-M), Version 15.2(7)E9, RELEASE SOFTWARE (fc1)"
-                f"\r\n{self.hostname} uptime is 5 minutes\r\ncisco {self.pid} (APM86XXX) processor (revision B0) with "
+        fam = self.image.split("-")[0].upper()
+        return (f"Cisco IOS Software, {fam} Software ({self.image.split('.')[0].upper()}), Version 15.2(7)E9, RELEASE "
+                f"SOFTWARE (fc1)\r\n{self.hostname} uptime is 5 minutes\r\nSystem image file is \"flash:{self.image}\""
+                f"\r\ncisco {self.pid} (APM86XXX) processor (revision B0) with "
                 f"524288K bytes of memory.\r\nProcessor board ID {self.serial}")
+
+    def ssh_ok(self):
+        return self.k9 and (self.has_keys or not self.strict_keys)
+
+    def telnet_ok(self):
+        return self.telnet and not any(ln.strip() == "transport input ssh" for ln in self.running)
+
+    def reboot(self):
+        """`reload`: gone for a few seconds, back on the boot image (a K9 one brings `ip ssh` with it)."""
+        ips = [ip for ip, d in list(REGISTRY.items()) if d is self]
+        for ip in ips:
+            del REGISTRY[ip]
+        time.sleep(5)
+        if self.boot in self.flash:
+            self.image, self.k9 = self.boot, "k9" in self.boot.lower()
+        for ip in ips:
+            REGISTRY[ip] = self
 
     def cdp_text(self):
         out = []
@@ -180,6 +207,10 @@ class Session:
             return d.cdp_text()
         if cmd == "show clock":
             return "*12:00:00.000 UTC Tue Nov 24 2026"
+        if cmd == "show boot":
+            return f"BOOT path-list      : flash:{d.boot or ''}\r\nConfig file         : flash:/config.text"
+        if cmd == "show ip ssh":
+            return "SSH Enabled - version 2.0" if d.ssh_ok() else "% Invalid input detected at '^' marker."
         if cmd.startswith("show"):
             return ""
         if cmd.startswith("ping"):
@@ -197,6 +228,38 @@ class Session:
                 return "\r\n4096 bytes copied in 0.120 secs", True
             self.pending = confirm
             return f"Destination filename [{m.group(1).split(':')[1]}]? "
+        m = re.match(r"dir flash:(\S*)$", cmd)
+        if m:
+            f, used = m.group(1), 10_000_000 + sum(s for s, _ in d.flash.values())
+            if not f:
+                return f"Directory of flash:/\r\n\r\n32514048 bytes total ({32514048 - used} bytes free)"
+            if f in d.flash:
+                return f"Directory of flash:/{f}\r\n\r\n    2  -rwx  {d.flash[f][0]}  Mar 1 1993 00:10:00 +00:00  {f}"
+            return f"%Error opening flash:/{f} (No such file or directory)"
+        m = re.match(r"copy tftp://([\d.]+)/(\S+) flash:(\S+)$", cmd)
+        if m:
+            def fetch(_):
+                host, path, dest = m.groups()
+                with tempfile.TemporaryDirectory() as td:
+                    out = os.path.join(td, "img")
+                    tftpy.TftpClient(host, 69).download(path, out)  # really over TFTP, from PandoraBox
+                    data = Path(out).read_bytes()
+                d.flash[dest] = (len(data), hashlib.md5(data).hexdigest())
+                return (f"\r\nAccessing tftp://{host}/{path}...\r\nLoading {path} from {host}: !!!!\r\n"
+                        f"[OK - {len(data)} bytes]\r\n\r\n{len(data)} bytes copied in 2.0 secs"), True
+            self.pending = fetch
+            return f"Destination filename [{m.group(3)}]? "
+        m = re.match(r"verify /md5 flash:(\S+)$", cmd)
+        if m:
+            f = d.flash.get(m.group(1))
+            return (f".....Done!\r\nverify /md5 (flash:{m.group(1)}) = {f[1]}" if f
+                    else f"%Error opening flash:{m.group(1)} (No such file or directory)")
+        if cmd == "reload":
+            def go(_):
+                threading.Thread(target=d.reboot, daemon=True).start()
+                return "", False
+            self.pending = go
+            return "Proceed with reload? [confirm]"
         m = re.match(r"configure replace (flash:\S+) force", cmd)
         if m and m.group(1) in d.snapshots:
             d.running = list(d.snapshots[m.group(1)])
@@ -215,6 +278,20 @@ class Session:
             return self.exec_cmd(t[3:])
         if t.startswith("this-is-invalid"):
             return "% Invalid input detected at '^' marker."
+        if t.endswith("?"):  # IOS help: shown, never configured
+            if t[:-1].strip() == "ip ssh":
+                return ("  authentication-retries  Specify number of authentication retries\r\n"
+                        "  version                 Specify protocol version" if d.k9
+                        else "% Invalid input detected at '^' marker.")
+            return ""
+        if not d.k9 and t.startswith(("crypto ", "ip ssh")):  # no crypto in this image
+            return "% Invalid input detected at '^' marker."
+        if t == "no boot system":
+            d.boot = None
+            return ""
+        if m := re.match(r"boot system flash:(\S+)", t):
+            d.boot = m.group(1)
+            return ""
         if t.startswith("crypto key generate"):
             if d.has_keys:
                 d.crypto_prompts += 1
@@ -299,7 +376,7 @@ class _Srv(paramiko.ServerInterface):
 
 def _serve_conn(conn, ip):
     dev = REGISTRY.get(ip)
-    if dev is None:
+    if dev is None or not dev.ssh_ok():  # no crypto / no keys: no SSH greeting, like real IOS
         return conn.close()
     t = paramiko.Transport(conn)
     t.add_server_key(getattr(dev, "hostkey", None) or HOSTKEY)
@@ -349,6 +426,58 @@ def start_ssh_listeners(ips):
                     c.close()
                     continue
                 threading.Thread(target=_serve_conn, args=(c, ip), daemon=True).start()
+        threading.Thread(target=loop, daemon=True).start()
+
+
+def _serve_telnet(conn, ip):
+    """Telnet for a box allowed it (image without crypto): IOS's login prompt, then the same CLI as over SSH."""
+    dev = REGISTRY.get(ip)
+    if dev is None or not dev.telnet_ok():
+        with contextlib.suppress(OSError):
+            conn.sendall(b"\r\n% Connection refused by remote host\r\n")
+        return conn.close()
+    s, buf, last = Session(dev, console=True), "", ""
+    conn.sendall(bytes([255, 251, 1, 255, 251, 3]) + s.line("").encode())  # WILL ECHO, WILL SGA, then Username:
+    try:
+        while data := conn.recv(1024):
+            i, text = 0, ""
+            while i < len(data):  # drop telnet option negotiation (IAC ...)
+                if data[i] == 255 and i + 2 < len(data) and data[i + 1] in (251, 252, 253, 254):
+                    i += 3
+                elif data[i] == 255 and i + 1 < len(data) and data[i + 1] == 250:
+                    i = data.find(bytes([255, 240]), i) + 2 if bytes([255, 240]) in data[i:] else len(data)
+                else:
+                    text += chr(data[i])
+                    i += 1
+            for ch in text:
+                if ch in "\n\x00" and last == "\r":
+                    last = ch
+                    continue
+                last = ch
+                if ch in "\r\n":
+                    conn.sendall(s.line(buf).encode("latin-1"))
+                    buf = ""
+                else:
+                    buf += ch
+                    if s.mode != "login_pass":  # IOS echoes what is typed (it said WILL ECHO), never a password
+                        conn.sendall(ch.encode("latin-1"))
+    except OSError:
+        pass
+    finally:
+        conn.close()
+
+
+def start_telnet_listeners(ips):
+    for ip in ips:
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind((ip, 23))
+        srv.listen(8)
+
+        def loop(srv=srv, ip=ip):
+            while True:
+                c, _ = srv.accept()
+                threading.Thread(target=_serve_telnet, args=(c, ip), daemon=True).start()
         threading.Thread(target=loop, daemon=True).start()
 
 
@@ -505,6 +634,7 @@ def main():
 
     # ---- lab -----------------------------------------------------------------------
     start_ssh_listeners([f"127.0.0.{i}" for i in range(2, 41)])
+    start_telnet_listeners(["127.0.0.39"])  # the box whose image has no crypto
     core = FakeIOS("core-sw", "C9300-48P", "FOC3333X0CC", factory=False, user="admin", password="cisco123",
                    cdp=[{"name": "lab-sw-01.pandora.local", "ip": "127.0.0.10", "platform": "C9300-24P",
                          "local": "GigabitEthernet1/0/1", "remote": "GigabitEthernet1/0/48"}])
@@ -862,6 +992,38 @@ def main():
             del REGISTRY[new_ip]
             alerts.resolve(ctx, p, "ssh-host-key")
         return f"{new_ip} claimed serial {before['serial']}: refused, device stays on {before['ip']}"
+
+    @check("no SSH on the image: added over Telnet (opt-in) -> K9 image copied over TFTP, MD5 checked, reloaded -> SSH on, Telnet off")
+    def _():
+        from pandora import upgrade
+        upgrade.FOLDER = work / "tftp" / "images"  # inside this run's TFTP root
+        upgrade.FOLDER.mkdir(parents=True, exist_ok=True)
+        k9 = "c3560-ipbasek9-mz.122-55.SE12.bin"
+        (upgrade.FOLDER / k9).write_bytes(os.urandom(300_000))
+        ip = "127.0.0.39"
+        old = FakeIOS("old-3560", "WS-C3560G-48TS-E", "FOC0939Y1ZZ", xe=False, factory=False, user="admin",
+                      password="cisco123", k9=False, image="c3560-ipbase-mz.122-55.SE12.bin", telnet=True)
+        REGISTRY[ip] = old
+        assert not access.ssh_open(ip) and access.ssh_open(ip, 23), "the fake should answer Telnet only"
+        r = c.post("/api/devices", json={"ip": ip, "username": "admin", "password": "cisco123"})
+        assert r.status_code == 502, "an SSH login must fail on a box with no SSH"
+        dev = c.post("/api/devices", json={"ip": ip, "username": "admin", "password": "cisco123", "telnet": True}).json()
+        i = dev["id"]
+        assert ctx.db.vars(i).get("telnet") is True
+        assert c.post(f"/api/devices/{i}/backups").status_code == 200  # day-2 works over Telnet
+        _, caps = ctx.probe(ctx.db.device(i))
+        assert caps.get("cap_ssh") is False, caps  # `ip ssh ?` refused
+        assert c.post(f"/api/devices/{i}/upgrade", json={"image": k9}).status_code == 400  # needs a yes: it reloads
+        assert c.post(f"/api/devices/{i}/upgrade", json={"image": k9, "confirm": True}).json()["ok"]
+        up = wait_for(lambda: (u := ctx.db.vars(i).get("upgrade")) and u["ok"] is not None and u, 240, 2, "upgrade")
+        assert up["ok"] is True, up["step"]
+        assert old.image == k9 and old.flash[k9][1] == upgrade.images()[0]["md5"]
+        assert access.ssh_open(ip) and not access.ssh_open(ip, 23), "SSH on, Telnet refused"
+        assert "telnet" not in ctx.db.vars(i)
+        from pandora import hostkeys
+        assert hostkeys.pinned(ctx.db, i), "the first SSH login pinned the new key"
+        assert c.post(f"/api/devices/{i}/backups").status_code == 200  # and day-2 now runs over SSH
+        return f"{up['step']}"
 
     # ---- summary --------------------------------------------------------------------------------
     ok = sum(1 for r in RESULTS if r[0])

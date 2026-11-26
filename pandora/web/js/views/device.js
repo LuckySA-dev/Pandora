@@ -65,6 +65,18 @@ export async function mount(root, params) {
         cabled, it shows up again as a new device.</p>`, "Remove", "danger")) {
       if (await attempt(() => api.post(`/api/devices/${id}/remove`, { confirm: true }), "Removed")) location.hash = "#/devices";
     }
+    if (act === "telnet-on" && await confirmDialog("Log in to this box over Telnet?", html`<p>Only for an IOS image without
+        crypto (no K9 in <code>show version</code>), which has no SSH server. Telnet sends the login in clear text: use it
+        only on PandoraBox's own provisioning network. SSH is still used whenever the box answers on it.</p>
+        <p>Then upgrade it to a K9 image here: that turns SSH on and Telnet off again.</p>`, "Allow Telnet for this box")) {
+      await attempt(() => api.post(`/api/devices/${id}/telnet`, { allow: true, confirm: true }), "Telnet allowed for this box");
+      await loadDet(); draw();
+    }
+    if (act === "telnet-off") {
+      await attempt(() => api.post(`/api/devices/${id}/telnet`, { allow: false, confirm: true }), "Telnet off for this box");
+      await loadDet(); draw();
+    }
+    if (act === "upgrade") await upgradeDialog(st, async () => { await loadDet(); draw(); });
     if (act === "dry" || act === "send") await push(st, act === "dry", draw);
     if (act === "connect") openTerminal(st);
     if (act === "break") { st.term?.send({ break: true }); st.term?.xterm.focus(); }
@@ -95,6 +107,32 @@ export async function mount(root, params) {
   const offs = [on("device", (d) => mine(d) && later()), on("snmp", (d) => mine(d) && later()),
     on("problem", (d) => mine(d) && later()), on("backup", (d) => mine(d) && later()), on("compliance", (d) => mine(d) && later())];
   return () => { offs.forEach((f) => f()); clearTimeout(t); closeTerminal(st); };
+}
+
+async function upgradeDialog(st, done) {
+  const { folder, images } = await api.get("/api/images");
+  const k9 = images.filter((i) => i.k9);
+  if (!k9.length) {
+    await dialog({
+      title: "No K9 image yet",
+      body: html`<p>Download the K9 (crypto) image for ${st.det.device.pid || "this model"} from software.cisco.com with your
+        Cisco account, and put the <code>.bin</code> file in:</p><pre class="config">${folder}</pre>
+        <p class="muted">${images.length ? `Found ${images.map((i) => i.name).join(", ")}, but no K9 in the name: that image has no SSH either.` : "The folder is empty."}</p>`,
+      actions: [{ label: "Close", value: false }],
+    });
+    return;
+  }
+  const r = await dialog({
+    title: "Upgrade to a K9 image",
+    body: html`<label class="field" for="up-img">Image</label>
+      <select id="up-img" name="image">${k9.map((i) => html`<option value="${i.name}">${i.name} (${Math.round(i.size / 1e6)} MB)</option>`)}</select>
+      <p style="margin-top:12px">PandoraBox copies it over TFTP, checks its MD5 on the box, makes it the boot image, saves and
+        <b>reloads the box</b> (it is offline for several minutes). Then it makes RSA keys, checks that an SSH login works,
+        merges the configuration over SSH and turns Telnet off. If a step fails, it stops there and says why.</p>`,
+    actions: [{ label: "Cancel", value: false }, { label: "Copy, check and reload", value: true, kind: "primary" }],
+  });
+  if (!r.value) return;
+  if (await attempt(() => api.post(`/api/devices/${st.id}/upgrade`, { image: r.form.image, confirm: true }), "Upgrade started: progress shows under Access")) await done();
 }
 
 async function showPicked(st) {
@@ -143,7 +181,7 @@ function overview(st) {
           : html`<p class="muted">Interface status appears after the first SNMP poll of a pre-configured device.</p>`}
       </section>
     </div>
-    <section class="panel"><h2>Details</h2>
+    <div class="grid"><section class="panel"><h2>Details</h2>
       <dl class="facts" style="margin-top:8px">
         <dt>Hostname</dt><dd>${d.hostname || d.alloc_hostname || ""}</dd>
         <dt>Management IP</dt><dd>${d.mgmt_ip || d.ip || ""}</dd>
@@ -158,7 +196,27 @@ function overview(st) {
         <dt>Note</dt><dd>${d.note || ""}</dd>
       </dl>
     </section>
+    ${access(st)}</div>
   </div>`;
+}
+
+// How PandoraBox logs in. Telnet is a per-box exception (an IOS image without crypto has no SSH): allowed by the
+// user, shown as clear text, and the way out is a K9 image, which turns SSH on and Telnet off.
+function access(st) {
+  const a = st.det.access || {};
+  const up = a.upgrade;
+  return html`<section class="panel"><h2>Access</h2>
+    <dl class="facts" style="margin-top:8px">
+      <dt>Login</dt><dd>${a.telnet ? html`<span class="state"><span class="led amber"></span>Telnet allowed (clear text), used only while SSH doesn't answer</span>` : "SSH"}</dd>
+      ${a.cap_ssh === false ? html`<dt>Image</dt><dd>No crypto (no K9): no SSH server</dd>` : ""}
+      ${up ? html`<dt>K9 upgrade</dt><dd>${up.ok === true ? "Done: " : up.ok === false ? html`<span style="color:var(--led-red)">Stopped: </span>` : "Running: "}${up.step}</dd>` : ""}
+    </dl>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      ${a.telnet ? html`<button class="btn primary" data-act="upgrade">Upgrade to a K9 image…</button>
+          <button class="btn" data-act="telnet-off">Stop using Telnet</button>`
+        : html`<button class="btn small" data-act="telnet-on" title="Only for an IOS image without crypto">This box has no SSH…</button>`}
+    </div>
+  </section>`;
 }
 
 function config(st) {

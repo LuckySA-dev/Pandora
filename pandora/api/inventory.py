@@ -8,7 +8,7 @@ from collections import Counter
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 
-from .. import alerts, alloc, backup, compliance, hostkeys, monitor
+from .. import alerts, alloc, backup, compliance, hostkeys, monitor, upgrade
 
 FILTERS = ("state", "path", "role", "source", "os_type")
 SEARCH = ("hostname", "alloc_hostname", "serial", "pid", "ip", "mgmt_ip", "mac", "console_port", "version")
@@ -101,8 +101,8 @@ def router(ctx):
         if not body.get("username") or not body.get("password"):
             return JSONResponse({"error": "username and password required"}, 400)
         creds = {k: body.get(k) for k in ("username", "password", "secret")}
-        try:
-            return ctx.add_by_ssh(ip, creds)
+        try:  # telnet: the user ticked "this box has no SSH" (IOS without crypto); cleartext, their call
+            return ctx.add_by_ssh(ip, creds, telnet=body.get("telnet") is True)
         except Exception as e:
             return JSONResponse({"error": f"could not log in to {ip}: {type(e).__name__}: {e}"[:400]}, 502)
 
@@ -131,6 +131,7 @@ def router(ctx):
             "compliance": compliance.get(ctx.db, device_id),
             "backups": len(ctx.db.q("SELECT id FROM backups WHERE device_id=?", device_id)),
             "last_backup": (backup.latest(ctx.db, device_id) or {}).get("ts"),
+            "access": {k: ctx.db.vars(device_id).get(k) for k in ("telnet", "cap_ssh", "upgrade")},
         }
 
     @r.patch("/devices/{device_id}")
@@ -179,6 +180,33 @@ def router(ctx):
         except ValueError as e:
             return JSONResponse({"error": str(e)}, 409)
         ctx.emit("device", {"id": device_id, "removed": True})
+        return {"ok": True}
+
+    @r.post("/devices/{device_id}/telnet")
+    def telnet(device_id: int, body: dict):
+        """Allow (or stop) Telnet for this one box: cleartext logins, for an image without crypto on the isolated
+        provisioning segment, until it is upgraded to a K9 image. An explicit yes, like remediate."""
+        if err := missing(device_id):
+            return err
+        if body.get("confirm") is not True:
+            return JSONResponse({"error": "confirm: true required"}, 400)
+        ctx.allow_telnet(device_id, body.get("allow") is True, "user")
+        return {"ok": True, "telnet": body.get("allow") is True}
+
+    @r.get("/images")
+    def images():
+        return {"folder": str(upgrade.FOLDER.resolve()), "images": upgrade.images()}
+
+    @r.post("/devices/{device_id}/upgrade")
+    def upgrade_image(device_id: int, body: dict):
+        """Copy a K9 image, check it, boot it and RELOAD the box, then SSH on and Telnet off (upgrade.py)."""
+        if err := missing(device_id):
+            return err
+        if body.get("confirm") is not True:
+            return JSONResponse({"error": "confirm: true required: the box reloads"}, 400)
+        ctx.db.audit("user", "upgrade:start", {"id": device_id, "image": body.get("image")})
+        if why := upgrade.start(ctx, device_id, str(body.get("image") or "")):
+            return JSONResponse({"error": why}, 400)
         return {"ok": True}
 
     @r.post("/devices/{device_id}/forget-host-key")

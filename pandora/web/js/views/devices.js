@@ -182,12 +182,14 @@ async function addByIp(reload) {
       <label class="field" for="ad-ip">IP address</label><input id="ad-ip" name="ip" placeholder="10.1.1.20" required>
       <label class="field" for="ad-u">Username</label><input id="ad-u" name="username" autocomplete="off" required>
       <label class="field" for="ad-p">Password</label><input id="ad-p" name="password" type="password" autocomplete="off" required>
-      <label class="field" for="ad-s">Enable secret (if different)</label><input id="ad-s" name="secret" type="password" autocomplete="off">`,
+      <label class="field" for="ad-s">Enable secret (if different)</label><input id="ad-s" name="secret" type="password" autocomplete="off">
+      <label class="check" style="margin-top:12px"><input type="checkbox" name="telnet">This box has no SSH: log in over Telnet</label>
+      <p class="muted" style="margin-top:4px">Only for an IOS image without crypto (no K9 in its name), on the isolated provisioning network: Telnet sends the login in clear text. Its page then offers an upgrade to a K9 image, which turns SSH on and Telnet off.</p>`,
     actions: [{ label: "Cancel", value: false }, { label: "Log in and add", value: true, kind: "primary" }],
   });
   if (!r.value) return;
   toast(`Logging in to ${r.form.ip}…`);
-  const dev = await attempt(() => api.post("/api/devices", { ...r.form, secret: r.form.secret || r.form.password }));
+  const dev = await attempt(() => api.post("/api/devices", { ...r.form, telnet: r.form.telnet === "on", secret: r.form.secret || r.form.password }));
   if (dev) { toast(`Added ${dev.hostname || dev.ip}`, "ok"); reload(); }
 }
 

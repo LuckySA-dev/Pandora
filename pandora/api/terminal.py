@@ -132,6 +132,40 @@ class _Ssh:
         pass  # not meaningful over SSH
 
 
+class _Telnet:
+    """A box allowed Telnet (image without crypto): netmiko's own telnetlib (Python 3.13 dropped the stdlib one).
+    It logs in like the SSH link does, so the user lands at the prompt."""
+
+    def __init__(self, ip, creds):
+        from netmiko._telnetlib.telnetlib import Telnet
+        self.t = Telnet(ip, 23, timeout=10)
+        self.t.read_until(b"Username:", 10)
+        self.t.write(creds["username"].encode() + b"\r\n")
+        self.t.read_until(b"Password:", 10)
+        self.t.write(creds["password"].encode() + b"\r\n")
+
+    def read(self):
+        import select
+        if not select.select([self.t.get_socket()], [], [], 0.5)[0]:
+            return b""
+        try:
+            return self.t.read_very_eager()
+        except EOFError:
+            return None
+
+    def write(self, b):
+        self.t.write(b)
+
+    def resize(self, cols, rows):
+        pass  # no NAWS negotiation: IOS keeps its default width
+
+    def send_break(self):
+        pass
+
+    def close(self):
+        self.t.close()
+
+
 def _open(ctx, d, stack, cols, rows):
     """Blocking: a link to the device's console port or an SSH shell sized to the browser window.
     A box with no address yet (found on console, waiting for PnP/AutoInstall) can only be reached on its console:
@@ -140,10 +174,14 @@ def _open(ctx, d, stack, cols, rows):
         return _Console(stack.enter_context(console.session(d["console_port"])))
     if not d["ip"]:
         raise LookupError("this device has no IP address yet: pre-config it, or connect it on a console port")
+    c = ctx.creds_for(d)
+    if ctx.uses_telnet(d):  # allowed for this box, and SSH doesn't answer
+        link = _Telnet(d["ip"], c)
+        stack.callback(link.close)
+        return link
     import paramiko
 
     from ..hostkeys import Pin
-    c = ctx.creds_for(d)
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(Pin(ctx, d["id"]))  # same pinned key as netmiko; refused before the password
     client.connect(d["ip"], username=c["username"], password=c["password"], timeout=10,

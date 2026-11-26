@@ -114,6 +114,16 @@ Select one box at a time on Devices, pick its role and reserved mgmt port(s), ch
 
 ZTP is the one path not yet proven on a real image (IOL has no Guest Shell), so it is the most likely to need a fix.
 
+## 5b. A box with no SSH (IOS image without crypto)
+
+`show version` on the box: an image name without `k9` (e.g. `c3560-ipbase-mz…`) has no SSH at all.
+
+- [ ] Devices -> Add by IP, tick "This box has no SSH: log in over Telnet" (or on its page: Access -> "This box has no SSH…"). Telnet is clear text: only on PandoraBox's own network
+- [ ] Back up now / Check compliance / Terminal work over Telnet
+- [ ] Download the K9 image for that model from software.cisco.com and put the `.bin` in `.pandora/tftp/images/`
+- [ ] Access -> "Upgrade to a K9 image…": copy (TFTP, several minutes), MD5 check, reload. The box is offline for a few minutes
+- [ ] Access shows "Done: on <image>, SSH on, Telnet off"; Login = SSH; `telnet <ip>` is refused; Terminal opens over SSH
+
 ## 6. Day-2 on the provisioned boxes
 
 - [ ] Device page → Config: a backup exists; **Check compliance** says compliant

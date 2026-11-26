@@ -414,3 +414,25 @@ def test_a_name_that_may_have_reached_the_box_is_kept_on_a_role_change(ctx):
     ctx.db.set_state(d["id"], "failed", "push failed")
     again = ctx.preview([d["id"]], role="router_edge")[0]
     assert (again["hostname"], again["mgmt_ip"]) == (first["hostname"], first["mgmt_ip"])
+
+
+def test_an_image_without_crypto_keeps_telnet_on_its_vty_lines(ctx):
+    from pandora.deliver import parse_caps
+    assert parse_caps("", "", "", "", "ip ssh ?\n% Invalid input detected at '^' marker.\n") == {"cap_ssh": False}
+    assert parse_caps("", "", "", "", "  version   Specify protocol version\n") == {"cap_ssh": True}
+    assert parse_caps("", "", "", "", "") == {}  # unread: unknown, the template keeps SSH
+    d = add(ctx, 94)
+    ctx.db.set_vars(d["id"], {"cap_ssh": False})
+    text, _, _ = ctx.render(d["id"], factory=True)
+    assert " transport input telnet\n" in text and "ip ssh" not in text and "crypto key" not in text
+    ctx.db.set_vars(d["id"], {"cap_ssh": True})
+    text, _, _ = ctx.render(d["id"], factory=True)
+    assert " transport input ssh\n" in text and "ip ssh version 2" in text
+
+
+def test_upgrade_reads_the_booted_image_and_free_flash():
+    from pandora import upgrade
+    ver = 'cisco WS-C3560G-48TS (PowerPC405) processor\nSystem image file is "flash:c3560-ipbase-mz.122-55.SE12.bin"\n'
+    assert upgrade.booted_image(ver) == "flash:c3560-ipbase-mz.122-55.SE12.bin"
+    assert upgrade.flash_free("Directory of flash:/\n\n32514048 bytes total (14039040 bytes free)\n") == 14039040
+    assert upgrade.flash_free("% Invalid input") is None
