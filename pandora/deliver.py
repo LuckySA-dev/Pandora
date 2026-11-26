@@ -198,14 +198,21 @@ class Ctx:
         if hostkeys.pinned(self.db, device_id):
             return ("this box has shown an SSH key before, so PandoraBox won't fall back to Telnet for it. If SSH "
                     "stopped answering, check the box (and its key) instead")
+        if self.db.vars(device_id).get("cap_ssh") is True:  # learned over SSH/console: authoritative, never undone
+            return "this box's image was seen with SSH before: Telnet is refused"
         if not dev["ip"] or not access.ssh_open(dev["ip"], 23):
             return "Telnet doesn't answer on this box"
+        if access.ssh_open(dev["ip"]):
+            return "SSH answers on this box: no reason to send the login in clear text"
         try:
             with connect(self.netmiko_params(dev, telnet=True)) as conn:
                 conn.enable()
+                serial = parse_show_version(conn.send_command("show version")).get("serial")
                 proven = no_crypto(conn)
         except Exception as e:
             return f"Telnet login failed: {type(e).__name__}: {e}"
+        if dev["serial"] and serial != dev["serial"]:  # Telnet proves nothing: at least the box must say it is this one
+            return f"the box answering on {dev['ip']} says serial {serial or '(none)'}, not {dev['serial']}: refused"
         if not proven:
             return "its image has crypto (K9, or it knows `ip ssh`): it can run SSH, so Telnet is refused"
         self.db.set_vars(device_id, {**self.db.vars(device_id), "cap_ssh": False})
