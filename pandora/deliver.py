@@ -76,9 +76,12 @@ class Ctx:
         rows = []
         for i in ids:
             self.set_role(i, role)
-            if role_vars is not None:  # role vars come from the wizard; keep what the box told us (caps, CDP)
-                self.db.set_vars(i, {**{k: v for k, v in self.db.vars(i).items() if k.startswith(("cap_", "seen_"))},
-                                     **role_vars})
+            if role_vars is not None:
+                # The wizard may set only what the role templates use. Everything else in vars is a fact PandoraBox
+                # learned or a decision taken through its own checked path (caps from the box, CDP port, Telnet
+                # proven on the box, retired addresses...): a request body must never write those.
+                kept = {k: v for k, v in self.db.vars(i).items() if k not in ROLE_VARS}
+                self.db.set_vars(i, {**kept, **{k: v for k, v in role_vars.items() if k in ROLE_VARS}})
             if ports and ports.get(str(i)):
                 alloc.allocate(self.db, self.cfg, i, [p.strip() for p in ports[str(i)].split(",") if p.strip()])
             self._mark_staged(i)
@@ -211,8 +214,12 @@ class Ctx:
                 proven = no_crypto(conn)
         except Exception as e:
             return f"Telnet login failed: {type(e).__name__}: {e}"
-        if dev["serial"] and serial != dev["serial"]:  # Telnet proves nothing: at least the box must say it is this one
-            return f"the box answering on {dev['ip']} says serial {serial or '(none)'}, not {dev['serial']}: refused"
+        # Telnet proves nothing about who answers: the box must at least say it is this one. No serial to compare
+        # (either side) is not a match.
+        want, got = (dev["serial"] or "").strip().upper(), (serial or "").strip().upper()
+        if not want or got != want:
+            return (f"the box answering on {dev['ip']} says serial {serial or '(none)'}, this device is "
+                    f"{dev['serial'] or 'of unknown serial'}: refused")
         if not proven:
             return "its image has crypto (K9, or it knows `ip ssh`): it can run SSH, so Telnet is refused"
         self.db.set_vars(device_id, {**self.db.vars(device_id), "cap_ssh": False})
@@ -752,6 +759,10 @@ def no_crypto(conn) -> bool:
     conn.exit_config_mode()
     return bool(image) and "k9" not in image and bool(
         re.search(r"^\s*% (Invalid input detected|Unrecognized command)", out, re.M))
+
+
+# The only vars the onboarding wizard may set: what switch_access.j2 / router_edge.j2 read.
+ROLE_VARS = frozenset({"vlans", "access_ports", "uplink", "wan_port", "wan_ip", "lan_port", "lan_ip"})
 
 
 class NeedCredentials(Exception):

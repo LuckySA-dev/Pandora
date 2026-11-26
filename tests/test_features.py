@@ -439,3 +439,13 @@ def test_upgrade_reads_the_booted_image_and_free_flash():
     assert upgrade.booted_image(ver) == "flash:c3560-ipbase-mz.122-55.SE12.bin"
     assert upgrade.flash_free("Directory of flash:/\n\n32514048 bytes total (14039040 bytes free)\n") == 14039040
     assert upgrade.flash_free("% Invalid input") is None
+
+
+def test_the_wizard_cannot_write_learned_facts_or_allow_telnet(ctx):
+    d = add(ctx, 95)
+    ctx.db.set_vars(d["id"], {"cap_ssh": True, "seen_port": "Gi1/0/48", "vlans": [{"id": "5", "name": "OLD"}]})
+    ctx.preview([d["id"]], role="switch_access",
+                role_vars={"telnet": True, "cap_ssh": False, "ops_retired": True, "vlans": [{"id": "10", "name": "U"}]})
+    v = ctx.db.vars(d["id"])
+    assert "telnet" not in v and "ops_retired" not in v and v["cap_ssh"] is True and v["seen_port"] == "Gi1/0/48"
+    assert v["vlans"] == [{"id": "10", "name": "U"}]
