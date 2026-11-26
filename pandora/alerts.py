@@ -81,6 +81,11 @@ def on_sample(ctx, device, sample: dict, prev: dict | None):
             raise_(ctx, did, key, "warning", f"Interface {port} went down")
         elif v == "up":
             resolve(ctx, did, key)
+    # sysUpTime going backwards = it restarted, whether or not its coldStart trap reached us (it can't while the
+    # laptop is cabled to another box)
+    up, was = str(sample.get("uptime", "")), str((prev or {}).get("uptime", ""))
+    if up.isdigit() and was.isdigit() and int(up) < int(was):
+        raise_(ctx, did, "reboot", "info", f"Device restarted (uptime now {int(up) // 6000} min)")
     cpu = sample.get("cpu5min")
     if cpu is not None and str(cpu).isdigit():
         if int(cpu) >= CPU_HIGH:
@@ -90,9 +95,21 @@ def on_sample(ctx, device, sample: dict, prev: dict | None):
 
 
 def on_poll_failed(ctx, device):
+    """No SNMP answer. After UNREACHABLE_AFTER in a row the device is *offline*: a status (last seen ...), polled
+    less often, and by default an info problem, not an alarm. A laptop with one LAN card cabled to another box is
+    the everyday case (seen on the bench: "No SNMP answer" high every 3 polls). cfg offline_severity raises it."""
     n = _fails[device["id"]] = _fails.get(device["id"], 0) + 1
-    if n >= UNREACHABLE_AFTER:
-        raise_(ctx, device["id"], "unreachable", "high", f"No SNMP answer for {n} polls")
+    if n < UNREACHABLE_AFTER:
+        return
+    if device.get("reach") != "offline":
+        ctx.db.set_reach(device["id"], "offline")
+        ctx.db.audit("monitor", "reach:offline", {"id": device["id"], "note": f"no SNMP answer for {n} polls"})
+        ctx.emit("device", ctx.db.devices(device["id"])[0])
+    seen = device.get("seen")
+    since = f"since {time.strftime('%H:%M', time.localtime(seen))}" if seen else "yet"
+    sev = ctx.cfg.get("offline_severity", "info")
+    raise_(ctx, device["id"], "unreachable", sev if sev in SEVERITIES else "info",
+           f"Offline: no SNMP answer {since}. Not cabled to this PC right now, or powered off?")
 
 
 def on_trap(ctx, device, name, varbinds):
@@ -109,7 +126,7 @@ def on_trap(ctx, device, name, varbinds):
 
 def on_device(ctx, device):
     """Provisioning state -> problems (failed pushes are the operator's most important signal)."""
-    if not device:
+    if not device or "state" not in device:  # e.g. {"id", "removed"}: nothing to judge
         return
     if device["state"] == "failed":
         raise_(ctx, device["id"], "provision", "high", f"Pre-config failed: {device.get('note') or ''}"[:300])

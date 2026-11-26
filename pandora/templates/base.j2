@@ -4,9 +4,22 @@ ip domain name {{ domain }}
 no ip domain lookup
 service password-encryption
 username {{ admin_user }} privilege 15 secret {{ admin_password }}
-{% if role != 'router_edge' %}
+{% if role != 'router_edge' and staged %}
+{# stage 1 of a two-stage AutoInstall (model unknown, so port names unknown): no port named at all. Every port of a
+   factory switch is in VLAN 1, so the PC reaches this address on whichever port it is cabled to. Stage 2
+   (Ctx.stage_two, over SSH) asks the box its ports and the PC's port, then moves management to VLAN {{ mgmt_vlan }}. #}
+interface Vlan1
+ ip address {{ mgmt_ip }} {{ netmask }}
+ no shutdown
+{% if gateway %}
+ip default-gateway {{ gateway }}
+{% endif %}
+{% elif role != 'router_edge' %}
 vlan {{ mgmt_vlan }}
  name PANDORA-MGMT
+{# exit commits the VLAN: a file copied to running-config (PnP, real 2960X 15.2) otherwise reached the access ports
+   first and IOS auto-created VLAN 99 named VLAN0099 #}
+exit
 {% if factory %}
 ! factory bootstrap ran on Vlan1 in the same subnet: move mgmt to Vlan{{ mgmt_vlan }}
 interface Vlan1

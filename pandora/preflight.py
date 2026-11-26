@@ -158,6 +158,35 @@ def check_windows(cfg) -> list[tuple]:
     return out
 
 
+def check_python(cfg) -> list[tuple]:
+    """The right interpreter with the right libraries. Seen: run with the system Python (another paramiko, no
+    project pins) while the venv had the fixes; and a paramiko that could no longer talk to IOS 15."""
+    from importlib import metadata
+    out = [("ok", "python", sys.executable) if sys.prefix != sys.base_prefix else
+           ("warn", "python", f"{sys.executable} is not a virtual environment: use .\\.venv\\Scripts\\python.exe "
+                              "(or run.ps1) so the project's pinned libraries are the ones running")]
+    try:
+        reqs = metadata.requires("pandorabox") or []
+    except metadata.PackageNotFoundError:
+        return out + [("fail", "dependencies", "PandoraBox is not installed in this Python: pip install -e .[dev] "
+                                               "(or scripts\\setup.ps1)")]
+    from packaging.requirements import Requirement
+    bad = []
+    for line in reqs:
+        r = Requirement(line)
+        if r.marker and not r.marker.evaluate({"extra": ""}):
+            continue  # dev extras: not needed to run
+        try:
+            have = metadata.version(r.name)
+        except metadata.PackageNotFoundError:
+            bad.append(f"{r.name} missing")
+            continue
+        if r.specifier and not r.specifier.contains(have, prereleases=True):
+            bad.append(f"{r.name} {have} (needs {r.specifier})")
+    return out + [("fail", "dependencies", "; ".join(bad) + ": pip install -e .[dev]") if bad else
+                  ("ok", "dependencies", f"{len(reqs)} requirements satisfied")]
+
+
 def check_rest(cfg) -> list[tuple]:
     out = []
     try:
@@ -190,8 +219,8 @@ def run(config_path) -> int:
     cfg = config.load(p)
     rows = [("ok", "config", str(p)) if p.exists() else
             ("warn", "config", f"{p} not found: defaults in use (copy pandora.toml.example)")]
-    for part in (check_secrets, check_ranges, check_network, check_other_nics, check_segment, check_windows,
-                 check_rest):
+    for part in (check_python, check_secrets, check_ranges, check_network, check_other_nics, check_segment,
+                 check_windows, check_rest):
         try:
             rows += part(cfg)
         except Exception as e:

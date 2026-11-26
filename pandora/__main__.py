@@ -78,8 +78,9 @@ def main():
                      "and run as Administrator). If you are sure the switch has no uplink to a real network, start "
                      "with --assume-isolated.")
         try:
+            known = {r["mac"]: r["ip"] for r in ctx.db.q("SELECT mac, ip FROM devices WHERE mac IS NOT NULL AND ip IS NOT NULL")}
             dhcp.DhcpServer(cfg["server_ip"], cfg["netmask"], config.ip_range(cfg["dhcp_range"]),
-                            ctx.dhcp_decide, cfg["iface"]).start()
+                            ctx.dhcp_decide, cfg["iface"], leases=known).start()
             tftp.start(cfg["server_ip"], Path(".pandora/tftp"), ctx.tftp_lookup)
         except OSError as e:
             sys.exit(f"Cannot bind DHCP/TFTP on {cfg['server_ip']}: {e}\n"
@@ -93,7 +94,7 @@ def main():
         sniff.start(cfg["iface"], lambda n: _remember(ctx, n))
 
     def on_console(port, r):
-        ctx.emit("device", remember_console(ctx.db, port, r))
+        ctx.emit("device", remember_console(ctx, port, r))
 
     console.watch(on_console, urls=cfg.get("console_urls") or ())
     log.info("UI: http://127.0.0.1:%s", cfg["http_port"])
@@ -103,16 +104,22 @@ def main():
                 timeout_keep_alive=15)
 
 
-def remember_console(db, port, r) -> dict:
+def remember_console(ctx, port, r) -> dict:
     """A box heard on a console port. Source/delivery only for a box we didn't know: plugging a console cable into a
-    switch already on PnP/SSH must not switch its delivery to console (seen: a real 2960X mid-onboarding)."""
+    switch already on PnP/SSH must not switch its delivery to console (seen: a real 2960X mid-onboarding). A known
+    provisioned box at the setup dialog or zero-touching has no startup-config: it is a factory box again."""
+    db = ctx.db
     facts = {k: v for k, v in r.items() if k != "console_state"}
     known = db.find(serial=facts.get("serial"), console_port=port)
     first = {} if known else {"source": "console", "path": "console"}
-    return db.upsert(console_port=port, note=f"console: {r['console_state']}", **first, **facts)
+    dev = db.upsert(console_port=port, note=f"console: {r['console_state']}", **first, **facts)
+    if dev["state"] == "provisioned" and r["console_state"] in ("dialog", "autoinstall", "ztp"):
+        dev = ctx.factory_again(dev, f"console shows the factory {r['console_state']}")
+    return dev
 
 
 def _remember(ctx, n):
+    ctx.learn_from_neighbor(n)  # every packet: a box being onboarded may tell us its model and our port
     key = (n["remote_name"], n["remote_port"])
     if all((s["remote_name"], s["remote_port"]) != key for s in ctx.sniffed):
         ctx.sniffed.append(n)

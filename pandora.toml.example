@@ -22,6 +22,12 @@ http_port = 80                # PnP agents always call port 80
 # Console servers (Opengear, Lantronix, ...) next to the USB/COM ports: pyserial URLs
 # console_urls = ["socket://192.0.2.10:2001", "rfc2217://192.0.2.10:2002"]
 
+# A pre-configured device that misses 3 SNMP polls in a row shows as Offline (last seen ...) and is asked again
+# only every offline_retry seconds. With one LAN card, every box you are not cabled to right now is offline, so the
+# problem it opens is "info" by default; raise it ("warning", "high") for a permanently cabled site.
+# offline_severity = "info"
+# offline_retry = 300
+
 # Some images have no SNMPv3 AES (IOL L2 in labs). Off = PandoraBox refuses to configure SNMP on them;
 # on = they get SNMPv3 authNoPriv instead (authenticated, not encrypted).
 # snmp_allow_auth_nopriv = false

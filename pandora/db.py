@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS devices (
   pid TEXT, os_type TEXT, version TEXT, hostname TEXT,
   source TEXT, vendor_class TEXT, path TEXT, role TEXT DEFAULT 'switch_access',
   state TEXT DEFAULT 'discovered', vars TEXT DEFAULT '{}', note TEXT,
-  created REAL, updated REAL
+  created REAL, updated REAL,
+  reach TEXT, seen REAL  -- monitor.py: 'online' / 'offline' from SNMP (NULL = not monitored yet), last answer
 );
 CREATE TABLE IF NOT EXISTS allocations (
   device_id INTEGER PRIMARY KEY REFERENCES devices(id),
@@ -103,6 +104,11 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.RLock()
         self.conn.executescript(SCHEMA)
+        # columns added after the first release: CREATE TABLE IF NOT EXISTS leaves an existing table as it is
+        have = {r["name"] for r in self.q("PRAGMA table_info(devices)")}
+        for col, typ in (("reach", "TEXT"), ("seen", "REAL")):
+            if col not in have:
+                self.x(f"ALTER TABLE devices ADD COLUMN {col} {typ}")
 
     def q(self, sql, *args):
         with self.lock:
@@ -167,6 +173,10 @@ class DB:
                state, note, time.time(), device_id)
         self.audit("system", f"state:{state}", {"id": device_id, "note": note})
         return self.device(device_id)
+
+    def set_reach(self, device_id, reach, seen=None):
+        """Reachability is monitoring, not a change to the device: it leaves `updated` (Last change) alone."""
+        self.x("UPDATE devices SET reach=?, seen=coalesce(?, seen) WHERE id=?", reach, seen, device_id)
 
     def vars(self, device_id) -> dict:
         return json.loads(self.device(device_id)["vars"] or "{}")

@@ -1,4 +1,5 @@
 """Conflict-free per-device allocation (hostname, mgmt IP, reserved mgmt ports) + change guard."""
+import json
 import re
 import sqlite3
 
@@ -17,6 +18,18 @@ PORT_TABLE = [
 ]
 ROUTER_PORTS = [(r"^(ISR4|C8[235]|C1[01]\d\d)", "GigabitEthernet0/0/1"),
                 (r"^(CISCO|C)(19|29|39)\d\d", "GigabitEthernet0/1")]
+
+
+_SWITCH_PID = re.compile(r"^(WS-C|C9[23]00|C1000-|IE-?\d)")
+
+
+def model_kind(pid: str | None) -> str | None:
+    """'switch' / 'router' when the PID says so, else None. Picking the other role pushes lines the box refuses
+    (real 2960X given the router role: `ip address` on a switch port)."""
+    pid = (pid or "").upper()
+    if _SWITCH_PID.match(pid):
+        return "switch"
+    return "router" if any(re.match(rx, pid) for rx, _ in ROUTER_PORTS) else None
 
 
 def default_ports(pid: str | None, role: str, count: int) -> list[str] | None:
@@ -43,9 +56,15 @@ def allocate(db, cfg, device_id, ports: list[str] | None = None) -> dict:
     if not existing:
         short = ROLE_SHORT.get(dev["role"], dev["role"])
         seen_names = {r["hostname"] for r in db.q("SELECT hostname FROM devices WHERE hostname IS NOT NULL")}
+        # other boxes' addresses are taken; the box's own is not. A box already answering on a free mgmt address
+        # keeps it: a new one meant re-addressing the very interface the SSH push runs over (real 1941: the session
+        # died mid-config after `ip address`, "ReadTimeout ... no shutdown")
         seen_ips = {cfg["server_ip"], cfg.get("mgmt_gateway")} | {
-            r["ip"] for r in db.q("SELECT ip FROM devices WHERE ip IS NOT NULL")}
+            r["ip"] for r in db.q("SELECT ip FROM devices WHERE ip IS NOT NULL AND id<>?", device_id)}
         free_ips = [ip for ip in ip_range(cfg["mgmt_range"]) if ip not in seen_ips]
+        if dev["ip"] in free_ips:
+            free_ips.remove(dev["ip"])
+            free_ips.insert(0, dev["ip"])
         nn, i = 1, 0
         while True:
             name = cfg["hostname_pattern"].format(site=cfg["site"], role=short, nn=nn)
@@ -71,14 +90,47 @@ def allocate(db, cfg, device_id, ports: list[str] | None = None) -> dict:
         db.x("DELETE FROM reserved_ports WHERE device_id=?", device_id)
     have = [r["port"] for r in db.q("SELECT port FROM reserved_ports WHERE device_id=?", device_id)]
     if not have:
-        # Defaults (last ports) are only for factory boxes: on an existing switch they are often uplinks.
-        guess = None if dev["path"] == "ssh" else default_ports(dev["pid"], dev["role"], int(cfg["reserved_port_count"]))
-        have = [normalize_if(p) for p in (ports or guess or [])]
+        have = [normalize_if(p) for p in (ports or guess_ports(dev, cfg) or [])]
         for p in have:
             db.x("INSERT OR IGNORE INTO reserved_ports VALUES (?,?,?)", device_id, p,
                  "mgmt" if ports else "mgmt-default")
     return {"device_id": device_id, "hostname": alloc["hostname"], "mgmt_ip": alloc["mgmt_ip"],
             "reserved_ports": have}
+
+
+def guess_ports(dev, cfg) -> list[str] | None:
+    """Reserved ports when the user named none. The port the laptop is cabled to, as the box itself named it over
+    CDP (vars seen_port), always comes first: that is the PC's way in after pre-config. Then the model's last ports
+    (factory boxes only: on an existing switch the last ports are often uplinks)."""
+    count = int(cfg["reserved_port_count"]) if dev["role"] != "router_edge" else 1
+    seen = (json.loads(dev.get("vars") or "{}")).get("seen_port")
+    model = None if dev["path"] == "ssh" else default_ports(dev["pid"], dev["role"], int(cfg["reserved_port_count"]))
+    if not seen:
+        return model
+    return [seen] + [p for p in (model or []) if p != seen][:count - 1]
+
+
+_PHYSICAL = re.compile(r"^(Fast|Gigabit|TenGigabit|TwoGigabit|FiveGigabit|TwentyFiveGig|FortyGigabit|HundredGig)?"
+                       r"Ethernet\d", re.I)
+
+
+def parse_ifnames(text: str) -> list[str]:
+    """`show ip interface brief` -> this box's physical port names, as it spells them."""
+    names = [normalize_if(m.group(1)) for m in re.finditer(r"^(\S+?\d+(?:/\d+)*)\s+\S+\s+(?:YES|NO)\s", text, re.M)]
+    return [n for n in names if _PHYSICAL.match(n)]
+
+
+def summarize_ports(names: list[str]) -> str:
+    """['FastEthernet0/1', ..., 'FastEthernet0/24', 'GigabitEthernet0/1'] -> 'FastEthernet0/1-24, GigabitEthernet0/1'"""
+    groups: dict[str, list[int]] = {}
+    for n in names:
+        if m := re.match(r"^(.*?)(\d+)$", n):
+            groups.setdefault(m.group(1), []).append(int(m.group(2)))
+    out = []
+    for prefix, nums in groups.items():
+        nums = sorted(set(nums))
+        out.append(f"{prefix}{nums[0]}" + (f"-{nums[-1]}" if len(nums) > 1 else ""))
+    return ", ".join(out)
 
 
 def drop_default_ports(db, device_id):

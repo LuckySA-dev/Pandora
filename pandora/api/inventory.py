@@ -137,9 +137,10 @@ def router(ctx):
     def edit_device(device_id: int, body: dict):
         if err := missing(device_id):
             return err
-        for k in ("path", "role"):
-            if body.get(k):
-                ctx.db.x(f"UPDATE devices SET {k}=? WHERE id=?", body[k], device_id)
+        if body.get("path"):
+            ctx.db.x("UPDATE devices SET path=? WHERE id=?", body["path"], device_id)
+        if body.get("role"):
+            ctx.set_role(device_id, body["role"])  # renames the box too while nothing was sent to it
         if body.get("ports"):
             alloc.allocate(ctx.db, ctx.cfg, device_id, [p.strip() for p in body["ports"].split(",") if p.strip()])
         ctx.emit("device", ctx.db.device(device_id))
@@ -154,6 +155,31 @@ def router(ctx):
     @r.post("/provision")
     def provision(body: dict):
         return ctx.queue([i for i in body["ids"] if ctx.db.device(i)])
+
+    @r.post("/devices/{device_id}/reset")
+    def reset(device_id: int, body: dict):
+        """The box was wiped (or will be): onboard it again. Keeps its name and address unless release."""
+        if err := missing(device_id):
+            return err
+        if not body.get("confirm"):
+            return JSONResponse({"error": "confirm required"}, 400)
+        dev = ctx.factory_again(ctx.db.device(device_id), "user: reset to factory", release=bool(body.get("release")))
+        ctx.emit("device", dev)
+        return dev
+
+    @r.post("/devices/{device_id}/remove")
+    def remove(device_id: int, body: dict):
+        """Forget the device completely (replaced, a duplicate row). Nothing is sent to it."""
+        if err := missing(device_id):
+            return err
+        if not body.get("confirm"):
+            return JSONResponse({"error": "confirm required"}, 400)
+        try:
+            ctx.remove(device_id)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, 409)
+        ctx.emit("device", {"id": device_id, "removed": True})
+        return {"ok": True}
 
     @r.post("/devices/{device_id}/forget-host-key")
     def forget_host_key(device_id: int):

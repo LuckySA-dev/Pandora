@@ -36,6 +36,13 @@ export function stateBadge(state) {
   const led = { provisioned: "green", failed: "red", needs_credentials: "amber", queued: "amber", provisioning: "amber blink" }[state] || "";
   return html`<span class="state"><span class="led ${led}"></span>${STATE_LABEL[state] || state}</span>`;
 }
+// Reachability of a pre-configured device, from SNMP (monitor.py): a status next to the state, not a problem.
+export function reachTag(d) {
+  if (d.state !== "provisioned" || !d.reach) return "";
+  return d.reach === "offline"
+    ? html`<div class="sub" title="No SNMP answer: polled again every few minutes"><span class="led red"></span> Offline${d.seen ? `, last seen ${ago(d.seen)}` : ""}</div>`
+    : html`<div class="sub"><span class="led green"></span> Online</div>`;
+}
 export const sevPill = (sev) => (sev ? html`<span class="sev-pill sev-${sev}">${sev}</span>` : "");
 export const deviceName = (d) => d.hostname || d.alloc_hostname || d.serial || d.ip || d.console_port || `#${d.id}`;
 

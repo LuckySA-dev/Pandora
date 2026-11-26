@@ -2,6 +2,7 @@
 {% for v in vlans or [] %}
 vlan {{ v.id }}
  name {{ v.name }}
+exit
 {% endfor %}
 {% for a in access_ports or [] %}
 interface range {{ a.ports }}

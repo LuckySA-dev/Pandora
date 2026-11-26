@@ -2,6 +2,7 @@
 import importlib
 import io
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -10,6 +11,21 @@ import tftpy
 from tftpy.TftpContexts import TftpContextServer
 
 log = logging.getLogger("pandora.tftp")
+# What every classic IOS box asks for while booting without a config (broadcast, whether or not it was pointed at
+# us): answered "not found" so it moves on, but not logged. On the bench they were ~100 log lines per box.
+IOS_DEFAULTS = re.compile(r"^(network-confg|cisconet\.cfg|router-confg|ciscortr\.cfg|[\w.-]+-confg)$", re.I)
+
+
+class _QuietMisses(logging.Filter):
+    """tftpy logs a refused file as an ERROR with a session dump; a refused file is how we say "not for you"."""
+
+    def filter(self, record):
+        msg = record.getMessage()
+        return "File not found" not in msg and "Currently handling these sessions" not in msg
+
+
+for _name in ("tftpy.TftpServer", "tftpy.TftpStates", "tftpy.TftpContexts"):
+    logging.getLogger(_name).addFilter(_QuietMisses())
 
 
 class _NoLockContext(TftpContextServer):
@@ -31,8 +47,10 @@ def start(server_ip: str, root: Path, lookup):
     root.mkdir(parents=True, exist_ok=True)
 
     def dyn(path, raddress=None, rport=None):
-        text = lookup(Path(str(path)).name, raddress)
-        log.info("TFTP %s from %s -> %s", path, raddress, "served" if text else "not found")
+        name = Path(str(path)).name
+        text = lookup(name, raddress)
+        quiet = not text and IOS_DEFAULTS.match(name)
+        (log.debug if quiet else log.info)("TFTP %s from %s -> %s", name, raddress, "served" if text else "not found")
         return io.BytesIO(text.encode()) if text else None
 
     server = tftpy.TftpServer(str(root), dyn_file_func=dyn, flock=False)

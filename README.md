@@ -6,25 +6,25 @@ Zero-touch pre-config for Cisco IOS / IOS-XE, run from one Windows laptop.
 
 ## Setup (Windows)
 
-1. Use a **dedicated NIC** cabled to the Cisco gear: a static IP (e.g. `10.99.0.1/24`) and **no gateway**. PandoraBox refuses to run DHCP on a NIC that looks like a real network.
-2. Install the dependencies: `pip install -e .[dev]`. Install [Npcap](https://npcap.com) for CDP/LLDP sniffing (optional).
-3. `copy pandora.toml.example pandora.toml` and edit `iface` / `server_ip`.
-4. Set the secrets (never stored in files):
+1. Use a **dedicated NIC** cabled to the Cisco gear: a static IP (e.g. `10.99.0.1/24`) and **no gateway**. PandoraBox refuses to run DHCP on a NIC that looks like a real network. Install [Npcap](https://npcap.com) (CDP/LLDP, and the check for another DHCP server).
+2. Install, once (and again after a `git pull`). It finds Python 3.11+, creates the project's own `.venv`, installs the pinned libraries and creates `pandora.toml`:
    ```powershell
-   $env:PANDORA_ADMIN_PASSWORD = "..."   # local user pushed to devices
-   $env:PANDORA_SNMP_AUTH = "..."        # SNMPv3 auth, >= 8 chars
-   $env:PANDORA_SNMP_PRIV = "..."        # SNMPv3 priv, >= 8 chars
-   $env:ANTHROPIC_API_KEY = "..."        # only for the agent with provider = "claude"
+   powershell -ExecutionPolicy Bypass -File .\setup.ps1
    ```
-5. Check the laptop before cabling anything. It verifies secrets, the NIC, the ports, the IP ranges, Npcap, the firewall and consoles, and says what to fix:
+3. Edit `pandora.toml`: `iface` (the adapter name setup lists) and `server_ip`.
+4. Check the laptop before cabling anything, in an **Administrator** PowerShell. It verifies the Python and library versions, secrets, the NIC, the ports, the IP ranges, Npcap, the firewall and consoles, and says what to fix:
    ```powershell
-   python -m pandora --preflight
+   powershell -ExecutionPolicy Bypass -File .\run.ps1 -Preflight
    ```
-6. Run it from an **Administrator** PowerShell. If binding fails, it prints the `netsh` firewall rules to add.
+5. Start it the same way every time:
    ```powershell
-   python -m pandora
+   powershell -ExecutionPolicy Bypass -File .\run.ps1
    ```
-   Open http://127.0.0.1 (the UI answers only to this laptop). `--no-dhcp` runs only the console, SNMP, and SSH features.
+   `run.ps1` always uses `.venv` (another Python has other library versions), asks for the three secrets once per window without showing them (`PANDORA_ADMIN_PASSWORD`, `PANDORA_SNMP_AUTH`, `PANDORA_SNMP_PRIV`; use the same values every time, devices keep them), and if an older PandoraBox still holds the ports it offers to stop it. Ctrl+C stops PandoraBox. `-NoDhcp` runs only the console, SNMP and SSH features. Set `$env:ANTHROPIC_API_KEY` first for the agent with provider `claude`.
+
+   Open http://127.0.0.1 (the UI answers only to this laptop).
+
+**A box you wipe (`write erase` + reload) is recognised** when it asks for DHCP again as a factory box (PnP agent, or a box PandoraBox configured by PnP/ZTP/AutoInstall): it goes back to *Identified*, keeps its hostname and address, and its old alarms close. For anything else the device page has **Reset** (onboard it again) and **Remove** (forget it). No need to throw the database away.
 
 For a first run on real switches, follow [docs/real-lab.md](docs/real-lab.md) step by step.
 

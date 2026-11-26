@@ -3,7 +3,7 @@ import { api } from "../api.js";
 import { faceplate } from "../faceplate.js";
 import { on } from "../live.js";
 import {
-  ago, attempt, confirmDialog, deviceName, dialog, html, PATH_LABEL, render, ROLE_LABEL, stateBadge, toast, when,
+  ago, attempt, confirmDialog, deviceName, dialog, html, PATH_LABEL, reachTag, render, ROLE_LABEL, stateBadge, toast, when,
 } from "../ui.js";
 
 const TABS = [["overview", "Overview"], ["config", "Config"], ["push", "Push config"], ["terminal", "Terminal"], ["history", "History"]];
@@ -49,6 +49,22 @@ export async function mount(root, params) {
       await attempt(() => api.post(`/api/devices/${id}/forget-host-key`), "Key forgotten: the next login pins the new one"); await loadDet(); draw();
     }
     if (act === "login") { const { login } = await import("./devices.js"); await login(id); }
+    if (act === "reset") {
+      const r = await dialog({
+        title: "Reset to factory state?",
+        body: html`<p>Use this after <code>write erase</code> + reload, or when a box was swapped. PandoraBox forgets that
+          it configured this device: its problems, compliance result and SSH key are cleared and it waits to be onboarded
+          again. Nothing is sent to the device.</p>
+          <label class="check"><input type="checkbox" name="release"> Also free its hostname, management IP and reserved ports</label>`,
+        actions: [{ label: "Cancel", value: false }, { label: "Reset", value: true, kind: "primary" }],
+      });
+      if (r.value) { await attempt(() => api.post(`/api/devices/${id}/reset`, { confirm: true, release: r.form.release === "on" }), "Reset: onboard it again from Devices"); await loadDet(); draw(); }
+    }
+    if (act === "remove" && await confirmDialog("Remove from inventory?", html`<p>${deviceName(st.det.device)} and everything PandoraBox
+        stored about it (backups, problems, address, SSH key) are deleted. Nothing is sent to the device. If it is still
+        cabled, it shows up again as a new device.</p>`, "Remove", "danger")) {
+      if (await attempt(() => api.post(`/api/devices/${id}/remove`, { confirm: true }), "Removed")) location.hash = "#/devices";
+    }
     if (act === "dry" || act === "send") await push(st, act === "dry", draw);
     if (act === "connect") openTerminal(st);
     if (act === "break") { st.term?.send({ break: true }); st.term?.xterm.focus(); }
@@ -100,6 +116,8 @@ function view(st) {
       <button class="btn" data-act="poll" ${d.ip ? "" : "disabled"}>Poll now</button>
       <button class="btn" data-act="backup" ${d.ip ? "" : "disabled"}>Back up now</button>
       <button class="btn" data-act="check" ${d.ip ? "" : "disabled"}>Check compliance</button>
+      <button class="btn" data-act="reset" title="After write erase + reload: onboard it again">Reset</button>
+      <button class="btn" data-act="remove" title="Delete it from the inventory">Remove</button>
     </div>
   </div>
   ${faceplate(d, { interfaces, severity: problems[0]?.severity })}
@@ -133,6 +151,7 @@ function overview(st) {
         <dt>Role</dt><dd>${ROLE_LABEL[d.role] || d.role || ""}</dd>
         <dt>Delivery</dt><dd>${PATH_LABEL[d.path] || d.path || ""}</dd>
         <dt>Found via</dt><dd>${d.source || ""} ${d.console_port || d.mac || ""}</dd>
+        <dt>Reachability</dt><dd>${reachTag(d) || html`<span class="muted">not monitored yet</span>`}</dd>
         <dt>CPU (5 min)</dt><dd>${st.det.cpu != null ? `${st.det.cpu}%` : "unknown"}</dd>
         <dt>Backups</dt><dd>${st.det.backups}${st.det.last_backup ? `, last ${ago(st.det.last_backup)}` : ""}</dd>
         <dt>Compliance</dt><dd>${st.det.compliance ? (st.det.compliance.compliant ? "Compliant" : "Drifted") : "Not checked"}</dd>

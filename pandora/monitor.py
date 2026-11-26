@@ -12,10 +12,27 @@ from . import alerts, compliance, snmp
 
 log = logging.getLogger("pandora.monitor")
 LAST: dict[int, dict] = {}  # device_id -> last SNMP sample (for "went down" transitions + dashboard)
+OFFLINE_RETRY = 300.0  # s between polls of an offline device (cfg offline_retry): a few timeouts, not one a minute
+_LAST_TRY: dict[int, float] = {}
+
+
+def mark_online(ctx, d, now=None):
+    """The device answered (SNMP poll, or an inform it sent): online, seen now. Tell the UI only on a change."""
+    now = now or time.time()
+    was = d.get("reach")
+    ctx.db.set_reach(d["id"], "online", now)
+    if was != "online":
+        if was == "offline":
+            gone = f", offline for {round((now - d['seen']) / 60)} min" if d.get("seen") else ""
+            ctx.db.audit("monitor", "reach:online", {"id": d["id"], "note": f"answers SNMP again{gone}"})
+        alerts.resolve(ctx, d["id"], "unreachable")
+        ctx.emit("device", ctx.db.devices(d["id"])[0])
 
 
 async def poll_one(ctx, d) -> dict:
+    _LAST_TRY[d["id"]] = time.time()
     sample, now = await snmp.poll(d["ip"], snmp.auth(ctx.cfg, dev=d)), time.time()
+    mark_online(ctx, d, now)
     with ctx.db.lock:  # one transaction per poll, not one commit per value
         ctx.db.conn.execute("BEGIN")
         try:
@@ -46,7 +63,13 @@ async def poll_forever(ctx, every=60, parallel=16):
                 alerts.on_poll_failed(ctx, d)
 
     while True:
-        await asyncio.gather(*(one(d) for d in ctx.db.devices() if d["state"] == "provisioned" and d["ip"]))
+        retry, now = float(ctx.cfg.get("offline_retry", OFFLINE_RETRY)), time.time()
+        # an offline box (a single-NIC laptop cabled to another one, say) is asked again every few minutes only
+        due = [d for d in ctx.db.devices() if d["state"] == "provisioned" and d["ip"]
+               and (d["reach"] != "offline" or now - _LAST_TRY.get(d["id"], 0) >= retry)]
+        for d in due:
+            _LAST_TRY[d["id"]] = now
+        await asyncio.gather(*(one(d) for d in due))
         await asyncio.sleep(every)
 
 
@@ -54,6 +77,8 @@ def on_trap(ctx, src, name, varbinds):
     ctx.db.x("INSERT INTO traps VALUES (?,?,?,?)", time.time(), src, name, json.dumps(varbinds))
     ctx.emit("trap", {"src": src, "name": name, "varbinds": varbinds, "ts": time.time()})
     dev = ctx.db.find(ip=src)
+    if dev and dev["state"] == "provisioned":
+        mark_online(ctx, dev)  # it just reached us: no need to wait for the next poll
     alerts.on_trap(ctx, dev, name, varbinds)
     if name == "configChange" and dev and config_written(varbinds):  # Oxidized-style: fetch right after the change
         schedule_backup(ctx, dev["id"])
@@ -107,7 +132,7 @@ async def backup_forever(ctx, every=6 * 3600):
     while True:
         await asyncio.sleep(every)
         for d in ctx.db.devices():
-            if d["state"] == "provisioned" and d["ip"]:
+            if d["state"] == "provisioned" and d["ip"] and d["reach"] != "offline":  # no SSH timeouts on absent boxes
                 await asyncio.to_thread(_backup_and_check, ctx, d["id"])
 
 
@@ -121,7 +146,7 @@ def dashboard(ctx) -> dict:
     for p in problems:
         by_sev[p["severity"]] += 1
     prov = [d for d in devs if d["state"] == "provisioned"]
-    down = {p["device_id"] for p in problems if p["key"] == "unreachable"}
+    down = {d["id"] for d in prov if d["reach"] == "offline"}
     cpu = sorted(((int(LAST[d["id"]]["cpu5min"]), d) for d in prov
                   if str(LAST.get(d["id"], {}).get("cpu5min", "")).isdigit()), key=lambda t: -t[0])[:5]
     comp = {r["device_id"]: json.loads(r["result"])["compliant"] for r in ctx.db.q("SELECT * FROM compliance")}

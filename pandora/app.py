@@ -31,6 +31,7 @@ def create_app(ctx, background=True) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_app):
         state["loop"] = asyncio.get_running_loop()
+        state["loop"].set_exception_handler(_quiet_resets)
         tasks = []
         if background and all(len(ctx.cfg.get(k) or "") >= 8 for k in ("snmp_auth", "snmp_priv")):
             try:
@@ -105,6 +106,15 @@ def create_app(ctx, background=True) -> FastAPI:
             clients.discard(q)
 
     return app
+
+
+def _quiet_resets(loop, context):
+    """Windows' Proactor loop prints a traceback whenever a peer resets a connection it already finished with
+    (`_call_connection_lost ... ConnectionResetError 10054`): every IOS PnP agent does that. Not an error of ours."""
+    exc = context.get("exception")
+    if isinstance(exc, ConnectionResetError) and "_call_connection_lost" in repr(context.get("handle", "")):
+        return
+    loop.default_exception_handler(context)
 
 
 def _in(host, net):

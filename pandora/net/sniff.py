@@ -18,16 +18,23 @@ def start(iface: str, on_neighbor):
     def handle(pkt):
         n = None
         if pkt.haslayer(cdp.CDPv2_HDR):
-            n = {"via": "cdp",
+            # the address ties the box to its inventory row (its DHCP lease while it is factory)
+            addrs = [r.addr for layer in (cdp.CDPMsgAddr, getattr(cdp, "CDPMsgMgmtAddr", None)) if layer
+                     and pkt.haslayer(layer) for r in (pkt[layer].addr or []) if getattr(r, "addr", None)]
+            n = {"via": "cdp", "src_mac": (pkt.src or "").lower(),
                  "remote_name": _get(pkt, cdp.CDPMsgDeviceID, "val"),
                  "remote_port": _get(pkt, cdp.CDPMsgPortID, "iface"),
                  "platform": _get(pkt, cdp.CDPMsgPlatform, "val"),
-                 "software": _get(pkt, cdp.CDPMsgSoftwareVersion, "val")[:200]}
+                 "software": _get(pkt, cdp.CDPMsgSoftwareVersion, "val")[:200],
+                 "addresses": [str(a) for a in addrs]}
         elif pkt.haslayer(lldp.LLDPDU):
+            raw = pkt[lldp.LLDPDUManagementAddress].management_address \
+                if pkt.haslayer(lldp.LLDPDUManagementAddress) else b""
             n = {"via": "lldp",
                  "remote_name": _get(pkt, lldp.LLDPDUSystemName, "system_name"),
                  "remote_port": _get(pkt, lldp.LLDPDUPortID, "id"),
-                 "platform": _get(pkt, lldp.LLDPDUSystemDescription, "description")[:200]}
+                 "platform": _get(pkt, lldp.LLDPDUSystemDescription, "description")[:200],
+                 "addresses": [".".join(map(str, raw))] if isinstance(raw, bytes) and len(raw) == 4 else []}
         if n and n["remote_name"]:
             n["remote_name"] = n["remote_name"].split(".")[0]
             on_neighbor(n)

@@ -6,6 +6,7 @@ PnP flow ported from the Open_PnP_Server idea (oliverl-21), reduced to what we n
   queued          -> config-upgrade (running) -> cli-exec "write memory" -> backoff terminate
 """
 import logging
+import threading
 import xml.etree.ElementTree as ET
 
 from fastapi import APIRouter, Request, Response
@@ -158,9 +159,13 @@ def router(ctx) -> APIRouter:
                 ctx.finish(dev["id"], "pnp", False, f"config-upgrade failed: {m['texts']}")
         elif dev and step == "save":
             steps[serial] = "saved"
-            # a failed save used to be noted "applied + saved" too (real 2960X: running-config had it, startup didn't)
-            ctx.finish(dev["id"], "pnp", bool(m["success"]), "PnP config applied + saved" if m["success"] else
-                       f"config applied, but write memory over PnP failed (not saved): {m['texts']}")
+            if m["success"]:
+                ctx.finish(dev["id"], "pnp", True, "PnP config applied + saved")
+            else:
+                # The config is applied; only PnP's cli-exec was refused. Real 1941 (IOS 15.4(3)M3): "Insufficient
+                # PnP CLI-Exec Service Privilege" once the config created a local user. Save over SSH instead.
+                threading.Thread(target=ctx.save_over_ssh, args=(dev["id"], f"PnP refused write memory: {m['texts']}"),
+                                 daemon=True).start()
         if dev:
             ctx.emit("device", ctx.db.device(dev["id"]))
         return xml(bye(m["udi"], m["correlator"]))

@@ -25,9 +25,10 @@ _IGNORE = [re.compile(p) for p in (
     r"^Building configuration.*", r"^Current configuration.*", r"^! Last configuration change.*",
     r"^! NVRAM config last updated.*", r"^ntp clock-period .*", r"^version.*", r"^ logging event link-status$",
     r"^ logging event subif-link-status$", r"^\s*ipv6 unreachables disable$", r"^end$", r"^\s*[#!].*",
-    r"^ no ip address", r"^ exit-peer-policy", r"^ exit-peer-session", r"^ exit-address-family",
+    r"^ no ip address", r"^\s*exit$", r"^ exit-peer-policy", r"^ exit-peer-session", r"^ exit-address-family",
     r"^crypto key generate rsa general-keys.*$",
     r"^ ip dhcp client client-id ascii ",  # IOS leaves it on the port a PnP/AutoInstall box booted from (IOL)
+    r"^ (duplex|speed) auto$",  # ISR G2 (real 1941, 15.4) prints its defaults: the strict mgmt-port check flagged them
     r"^ip ssh version 2$")]  # IOS-XE 17.x has only v2 and no longer prints it
 # Commands where a new value replaces the old one, so no "no <old value>" is needed first.
 _IDEMPOTENT = [(r"^vlan", r"^name "), (r"^interface ", r"^description "), (r"^interface ", r"^ip address "),
@@ -96,6 +97,8 @@ def _norm(line: str) -> str:
     line = re.sub(r"\s+", " ", line.strip())
     line = re.sub(r"^ip domain-name ", "ip domain name ", line)
     line = re.sub(r"^(no )?ip domain-lookup\b", r"\1ip domain lookup", line)  # classic IOS 15.x spelling
+    # IOS 12.2 adds the notify view it creates for an informs host: `... v3 priv notify *tv.FFFFFFFF...` (real 3560G)
+    line = re.sub(r"^(snmp-server group \S+ v3 \S+) notify \*tv\.[0-9A-Fa-f.]+$", r"\1", line)
     if m := re.match(r"^(username \S+)", line):
         return m.group(1)
     if m := re.match(r"^interface (.+)$", line):

@@ -28,6 +28,7 @@ from .identify import parse_sysdescr
 log = logging.getLogger("pandora.snmp")
 
 SYS = {"sysDescr": "1.3.6.1.2.1.1.1.0", "sysObjectID": "1.3.6.1.2.1.1.2.0", "sysName": "1.3.6.1.2.1.1.5.0"}
+SYS_UPTIME = "1.3.6.1.2.1.1.3.0"  # TimeTicks, 1/100 s
 ENT_SERIAL = "1.3.6.1.2.1.47.1.1.1.1.11"
 ENT_MODEL = "1.3.6.1.2.1.47.1.1.1.1.13"
 IF_NAME = "1.3.6.1.2.1.31.1.1.1.1"
@@ -216,6 +217,10 @@ async def poll(ip, a) -> dict:
                 if name and not name.startswith(("Nu", "Vo", "Lo")):
                     out[f"{name}:{label}"] = {"1": "up", "2": "down"}.get(str(v), str(v)) if label == "oper" else str(v)
         cpu = list((await walk(ip, a, CPU_5MIN, s=s)).values()) or list((await walk(ip, a, AVG_BUSY5, s=s)).values())
+        try:  # sysUpTime: a restart shows as uptime going back (alerts.on_sample), even with no trap received
+            out["uptime"] = str(next(iter((await get(ip, a, SYS_UPTIME, s=s)).values())))
+        except Exception:
+            pass
     if cpu:
         out["cpu5min"] = str(cpu[0])
     return out

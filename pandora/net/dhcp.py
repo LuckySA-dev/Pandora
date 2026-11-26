@@ -30,7 +30,7 @@ def parse(pkt: bytes) -> dict:
         ln = data[i + 1]
         opts[code] = data[i + 2:i + 2 + ln]
         i += 2 + ln
-    return {"op": f[0], "xid": f[4], "flags": f[6], "giaddr": f[10],
+    return {"op": f[0], "xid": f[4], "flags": f[6], "ciaddr": socket.inet_ntoa(f[7]), "giaddr": f[10],
             "chaddr": f[11], "mac": ":".join(f"{b:02x}" for b in f[11][:6]), "options": opts}
 
 
@@ -59,10 +59,13 @@ def info_from(req: dict) -> dict:
 
 
 class DhcpServer:
-    def __init__(self, server_ip, netmask, pool: list[str], decide, iface_name: str | None = None):
+    def __init__(self, server_ip, netmask, pool: list[str], decide, iface_name: str | None = None,
+                 leases: dict[str, str] | None = None):
         self.server_ip, self.pool, self.decide, self.iface = server_ip, pool, decide, iface_name
         self.mask = socket.inet_aton(netmask)
-        self.leases: dict[str, str] = {}  # ponytail: in memory, restarting forgets leases (devices just re-DHCP)
+        # mac -> ip. Seeded from the inventory at start: a restart used to forget every lease, so a box renewing
+        # its lease was ignored until it expired (real 2960X: wiped and reloaded, unnoticed for half an hour)
+        self.leases: dict[str, str] = {m: ip for m, ip in (leases or {}).items() if ip in pool}
         self.offered: dict[str, dict] = {}
         self.sock = None
 
@@ -88,13 +91,21 @@ class DhcpServer:
                 return None
             self.offered[mac] = extra
             return build(req, OFFER, ip, self.server_ip, self._opts(extra))
-        if mtype == REQUEST and mac in self.offered:
-            want = info_from(req)["requested_ip"]
+        if mtype == REQUEST:
+            # SELECTING / INIT-REBOOT name the address in option 50, RENEWING / REBINDING in ciaddr
+            want = info_from(req)["requested_ip"] or (req["ciaddr"] if req["ciaddr"] != "0.0.0.0" else None)
+            if mac not in self.offered and mac not in self.leases:
+                # a lease from before a restart: take it back if it is ours and nobody else holds it
+                if not want or want not in self.pool or want in self.leases.values():
+                    return None  # not ours to answer: stay silent, the client falls back to DISCOVER
+                self.leases[mac] = want
             ip = self.lease_for(mac)
             if want and want != ip:
                 return build(req, NAK, "0.0.0.0", self.server_ip, {})
-            extra = self.decide(mac, info_from(req), ip) or self.offered[mac]
-            return build(req, ACK, ip, self.server_ip, self._opts(extra))
+            extra = self.decide(mac, info_from(req), ip)
+            if extra is None and mac not in self.offered:
+                return None  # a box we don't serve (never offered it anything): same as DISCOVER
+            return build(req, ACK, ip, self.server_ip, self._opts(extra or self.offered[mac]))
         if mtype in (RELEASE, DECLINE):
             self.leases.pop(mac, None)
             self.offered.pop(mac, None)
