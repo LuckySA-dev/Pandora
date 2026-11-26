@@ -190,7 +190,11 @@ def router(ctx):
             return err
         if body.get("confirm") is not True:
             return JSONResponse({"error": "confirm: true required"}, 400)
-        ctx.allow_telnet(device_id, body.get("allow") is True, "user")
+        if body.get("allow") is True:
+            if why := ctx.enable_telnet(device_id):  # logs in over Telnet and checks the image first
+                return JSONResponse({"error": why}, 400)
+        else:
+            ctx.allow_telnet(device_id, False, "user")
         return {"ok": True, "telnet": body.get("allow") is True}
 
     @r.get("/images")

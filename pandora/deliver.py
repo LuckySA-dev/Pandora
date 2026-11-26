@@ -61,6 +61,8 @@ class Ctx:
         # so only lines every IOS takes. vty 0-4 always exists; lines left alone keep IOS's `login` (refused).
         v = {"cap_vty_last": 4, "cap_traps_config": False, **self.cfg, **dev_vars, "snmp_level": level or "priv",
              "snmp_user": snmp.user(self.cfg, level or "priv"),
+             # vty stay on Telnet only for a box proven to have no crypto AND allowed Telnet by the user
+             "no_ssh": dev_vars.get("cap_ssh") is False and dev_vars.get("telnet") is True,
              "role": dev["role"], "hostname": a["hostname"],
              "mgmt_ip": a["mgmt_ip"], "reserved_ports": a["reserved_ports"], "gateway": self.cfg["mgmt_gateway"],
              "factory": factory, "autosave": autosave}
@@ -161,25 +163,54 @@ class Ctx:
             ver = conn.send_command("show version")
             facts = parse_show_version(ver)
             facts.update({k: v for k, v in parse_inventory(conn.send_command("show inventory")).items() if v})
+            if telnet and not no_crypto(conn):
+                raise RuntimeError("its image has crypto (K9, or it knows `ip ssh`): it can run SSH, so Telnet is "
+                                   "refused. Turn SSH on there and add it without the Telnet tick")
         hostname = facts.pop("hostname", None)
         # Known by serial at a new address: its identity is known only now. Check the pin before anything about
         # that device changes (address, path, credentials): a box claiming its serial with another key gets nothing.
         same = self.db.find(serial=facts.get("serial"), ip=ip)
         if same and pin and pin.seen and (want := hostkeys.pinned(self.db, same["id"])) and want != pin.seen:
             raise hostkeys.HostKeyChanged(hostkeys.mismatch(self, same["id"], ip, " (added by IP)"))
+        # Telnet proves nothing about who answers: it may only add a new box or the same one at its own address
+        if telnet and same and (hostkeys.pinned(self.db, same["id"]) or (same["ip"] and same["ip"] != ip)):
+            raise RuntimeError(f"serial {facts.get('serial')} is already {same['hostname'] or '#' + str(same['id'])} "
+                               f"at {same['ip']}: a Telnet login can't prove it is the same box. Remove that device "
+                               "first if it was replaced")
         dev = self.db.upsert(ip=ip, source="ssh", path="ssh", hostname=hostname, **facts)
         if dev["path"] != "ssh":
             self.db.x("UPDATE devices SET path='ssh' WHERE id=?", dev["id"])
         access.CREDS[dev["id"]] = creds
         if pin and pin.seen:
             hostkeys.remember(self.db, dev["id"], pin.seen)
-        if telnet:
-            self.allow_telnet(dev["id"], True, "added by IP over Telnet")
+        if telnet:  # proven above: no crypto on this image
+            self.db.set_vars(dev["id"], {**self.db.vars(dev["id"]), "cap_ssh": False})
+            self.allow_telnet(dev["id"], True, "added by IP over Telnet; no crypto confirmed")
         self.db.audit("user", "added_by_ssh", {"id": dev["id"], "ip": ip})
         self.check_confreg(dev["id"], ver)
         dev = self.db.device(dev["id"])
         self.emit("device", dev)
         return dev
+
+    def enable_telnet(self, device_id) -> str | None:
+        """The user's opt-in, proven on the box: a Telnet login that finds an image without crypto. Returns why not."""
+        dev = self.db.device(device_id)
+        if hostkeys.pinned(self.db, device_id):
+            return ("this box has shown an SSH key before, so PandoraBox won't fall back to Telnet for it. If SSH "
+                    "stopped answering, check the box (and its key) instead")
+        if not dev["ip"] or not access.ssh_open(dev["ip"], 23):
+            return "Telnet doesn't answer on this box"
+        try:
+            with connect(self.netmiko_params(dev, telnet=True)) as conn:
+                conn.enable()
+                proven = no_crypto(conn)
+        except Exception as e:
+            return f"Telnet login failed: {type(e).__name__}: {e}"
+        if not proven:
+            return "its image has crypto (K9, or it knows `ip ssh`): it can run SSH, so Telnet is refused"
+        self.db.set_vars(device_id, {**self.db.vars(device_id), "cap_ssh": False})
+        self.allow_telnet(device_id, True, "user; no crypto confirmed over Telnet")
+        return None
 
     def allow_telnet(self, device_id, allow: bool, why: str):
         """Per-box opt-in, off by default: Telnet sends the login in cleartext, so it is for boxes on the isolated
@@ -582,7 +613,12 @@ class Ctx:
         """Telnet only where the user allowed it for this box (an IOS image without crypto has no SSH server) and
         only while SSH doesn't answer: once a K9 image runs SSH, SSH is used even before Telnet is switched off."""
         ip = ip or dev.get("ip")
-        return bool(ip and self.db.vars(dev["id"]).get("telnet") and not access.ssh_open(ip)
+        v = self.db.vars(dev["id"])
+        # Never a silent downgrade: the user allowed it, the box was proven to have no crypto (enable_telnet /
+        # add_by_ssh), and it never showed an SSH key. A box with a pinned key that stops answering SSH is an
+        # error, not a reason to send the password in clear text.
+        return bool(ip and v.get("telnet") is True and v.get("cap_ssh") is False
+                    and not hostkeys.pinned(self.db, dev["id"]) and not access.ssh_open(ip)
                     and access.ssh_open(ip, 23))
 
     def reachable(self, dev, ip=None) -> bool:
@@ -696,6 +732,19 @@ def connect(params, pin=None, tries=2):
                 raise
             log.info("SSH to %s timed out, trying once more", params.get("host"))
             time.sleep(5)
+
+
+def no_crypto(conn) -> bool:
+    """Two signals from the box, both needed: `ip ssh ?` refused AND the running image's name has no K9 in it."""
+    ver = conn.send_command("show version")
+    m = re.search(r'System image file is "([^"]+)"', ver)
+    image = (m.group(1) if m else "").lower()
+    conn.config_mode()
+    out = conn.send_command_timing("ip ssh ?", strip_prompt=False, strip_command=False)
+    conn.send_command_timing(chr(3), strip_prompt=False)  # Ctrl-C drops the half-typed line
+    conn.exit_config_mode()
+    return bool(image) and "k9" not in image and bool(
+        re.search(r"^\s*% (Invalid input detected|Unrecognized command)", out, re.M))
 
 
 class NeedCredentials(Exception):

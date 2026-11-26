@@ -422,7 +422,10 @@ def test_an_image_without_crypto_keeps_telnet_on_its_vty_lines(ctx):
     assert parse_caps("", "", "", "", "  version   Specify protocol version\n") == {"cap_ssh": True}
     assert parse_caps("", "", "", "", "") == {}  # unread: unknown, the template keeps SSH
     d = add(ctx, 94)
-    ctx.db.set_vars(d["id"], {"cap_ssh": False})
+    ctx.db.set_vars(d["id"], {"cap_ssh": False})  # one help answer alone never weakens the vty lines
+    text, _, _ = ctx.render(d["id"], factory=True)
+    assert " transport input ssh\n" in text and "ip ssh version 2" in text
+    ctx.db.set_vars(d["id"], {"cap_ssh": False, "telnet": True})  # proven on the box + allowed by the user
     text, _, _ = ctx.render(d["id"], factory=True)
     assert " transport input telnet\n" in text and "ip ssh" not in text and "crypto key" not in text
     ctx.db.set_vars(d["id"], {"cap_ssh": True})

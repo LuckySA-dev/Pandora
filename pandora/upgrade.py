@@ -152,9 +152,10 @@ def run(ctx, device_id, img) -> tuple[bool, str]:
                 c.send_command_timing(line)
             c.set_base_prompt()
             c.save_config()
+        # this run made the keys: the first SSH login below pins them (a box with no crypto never had a pin)
+        hostkeys.forget(ctx, device_id, "new image, new RSA key made by the upgrade", resolve=False)
         if not _wait(lambda: access.ssh_open(dev["ip"]), 120):
             return False, "SSH didn't open after the keys were made: Telnet stays on, check `show ip ssh`"
-    hostkeys.forget(ctx, device_id, "new image, new RSA key", resolve=False)
     ctx.ssh_command(dev, "show ip ssh")  # logs in over SSH (Telnet isn't used once SSH answers) and pins the key
 
     # 4. Telnet off on the box: probe caps again (cap_ssh is now true). A box PandoraBox pre-configured gets its full

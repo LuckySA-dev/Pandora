@@ -1023,7 +1023,10 @@ def main():
         from pandora import hostkeys
         assert hostkeys.pinned(ctx.db, i), "the first SSH login pinned the new key"
         assert c.post(f"/api/devices/{i}/backups").status_code == 200  # and day-2 now runs over SSH
-        return f"{up['step']}"
+        # no way back: a box that showed an SSH key never falls back to Telnet
+        r = c.post(f"/api/devices/{i}/telnet", json={"allow": True, "confirm": True})
+        assert r.status_code == 400 and "SSH key" in r.text, r.text
+        return f"{up['step']}; Telnet refused for it afterwards"
 
     # ---- summary --------------------------------------------------------------------------------
     ok = sum(1 for r in RESULTS if r[0])
