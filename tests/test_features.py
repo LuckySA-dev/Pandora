@@ -522,3 +522,10 @@ def test_an_unknown_ios_message_counts_as_an_error():
     from pandora.deliver import ios_errors
     assert ios_errors("% Some message IOS never printed before\n% Access VLAN does not exist. Creating vlan 99") == [
         "% Some message IOS never printed before"]
+
+
+def test_a_warning_that_reports_a_failure_is_an_error():
+    from pandora.deliver import ios_errors
+    assert ios_errors("%Warning: the command failed to apply\n%Warning: something else\n"
+                      "%Warning: portfast should only be enabled on ports connected to a single host") == [
+        "%Warning: the command failed to apply", "%Warning: something else"]
