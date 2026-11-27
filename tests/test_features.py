@@ -516,3 +516,9 @@ def test_ios_notes_are_not_errors():
            " have effect when the interface is in a non-trunking mode.\n% Invalid input detected at '^' marker.\n"
            "% Command rejected: Bad VLAN list\n%Warning: portfast should only be enabled on ports connected to a host")
     assert ios_errors(out) == ["% Invalid input detected at '^' marker.", "% Command rejected: Bad VLAN list"]
+
+
+def test_an_unknown_ios_message_counts_as_an_error():
+    from pandora.deliver import ios_errors
+    assert ios_errors("% Some message IOS never printed before\n% Access VLAN does not exist. Creating vlan 99") == [
+        "% Some message IOS never printed before"]

@@ -774,15 +774,16 @@ def no_crypto(conn) -> bool:
         re.search(r"^\s*% (Invalid input detected|Unrecognized command)", out, re.M))
 
 
-_IOS_ERROR = re.compile(r"^\s*%\s*(Invalid|Incomplete|Ambiguous|Unrecognized|Error|Bad |Command rejected|"
-                        r".*\b(not allowed|failed|cannot|can't|unable)\b)", re.I | re.M)
+# Fail closed: every `%` line is a refusal, except these notes IOS prints on success.
+_IOS_NOTE = re.compile(r"^\s*%\s*(Warning\b|Portfast has been configured|Access VLAN does not exist\. Creating vlan)",
+                       re.I)
 
 
 def ios_errors(text: str) -> list[str]:
-    """The `%` lines that mean IOS refused something. IOS also prints `%` notes on success ("%Portfast has been
-    configured on Ethernet0/2 but will only have effect when the interface is in a non-trunking mode", seen on IOL
-    while making a provisioning backbone): those are not failures."""
-    return [m.group(0).strip() for m in re.finditer(r"^.*$", text, re.M) if _IOS_ERROR.match(m.group(0))]
+    """The `%` lines that mean IOS refused something: all of them but the known notes printed on success
+    ("%Portfast has been configured on Ethernet0/2 but will only have effect when the interface is in a
+    non-trunking mode", seen on IOL while making a provisioning backbone). An unknown `%` line counts as an error."""
+    return [ln.strip() for ln in text.splitlines() if ln.lstrip().startswith("%") and not _IOS_NOTE.match(ln)]
 
 
 # The only vars the onboarding wizard may set: what switch_access.j2 / router_edge.j2 read.
