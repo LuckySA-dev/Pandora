@@ -1,6 +1,7 @@
 #!/bin/bash
 # Inside the backbone lab's PandoraBox: the blank boxes' console relay (IOL boots only once it answers), then
-# PandoraBox itself with DHCP / TFTP / PnP on eth1 (the single LAN card, cabled to bb). Fresh database each run.
+# PandoraBox itself with DHCP / TFTP / PnP on eth1 (the single LAN card, cabled to bb). Its database is /tmp/bb.db:
+# kept when this script runs again (a restart), new on every lab deploy.
 #   docker exec -i clab-pandora-bb-pandora bash < lab/backbone-pandora.sh
 cd /app
 if ! ss -ltn | grep -q ':7061 '; then

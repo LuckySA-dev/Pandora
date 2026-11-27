@@ -9,6 +9,7 @@ from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 
 from .. import alerts, alloc, backbone, backup, compliance, hostkeys, monitor, ports, status, upgrade
+from ..deliver import ios_errors
 
 FILTERS = ("state", "path", "role", "source", "os_type")
 SEARCH = ("hostname", "alloc_hostname", "serial", "pid", "ip", "mgmt_ip", "mac", "console_port", "version")
@@ -211,6 +212,9 @@ def router(ctx):
                     out.setdefault(alloc.normalize_if(ln.split(None, 1)[1].split(".")[0]), "a management network link")
         if seen := ctx.db.vars(device_id).get("seen_port"):
             out.setdefault(alloc.normalize_if(seen), "the port it reaches PandoraBox on")
+        dev, last = ctx.db.device(device_id), monitor.LAST.get(device_id, {})
+        if dev and (port := (last.get("_ipif") or {}).get(dev["ip"] or "")):  # the port holding the address in use
+            out.setdefault(alloc.normalize_if(port), f"where its address {dev['ip']} lives, the one PandoraBox uses")
         return out
 
     @r.post("/devices/{device_id}/ports/admin")
@@ -231,7 +235,7 @@ def router(ctx):
             out = ctx.ssh_config(dev, [f"interface {name}", " no shutdown" if up else " shutdown"])
         except Exception as e:
             return JSONResponse({"error": f"{type(e).__name__}: {e}"[:400]}, 502)
-        if bad := [ln.strip() for ln in out.splitlines() if ln.strip().startswith("%")]:
+        if bad := ios_errors(out):
             return JSONResponse({"error": "; ".join(bad)}, 502)
         ctx.db.audit("user", "port:" + ("up" if up else "shut"), {"id": device_id, "port": name})
         return {"ok": True, "port": name, "up": up}

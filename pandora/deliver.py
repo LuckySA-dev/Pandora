@@ -381,8 +381,11 @@ class Ctx:
             old_ip = self.db.device(device_id)["ip"]
             # A merged (SSH) device was reached on its existing address. Only switch to the new mgmt IP once
             # PandoraBox can actually reach it; otherwise every later backup/poll/terminal would fail.
-            if method == "ssh" and old_ip and old_ip != a["mgmt_ip"] and not self.reachable(self.db.device(device_id),
-                                                                                             a["mgmt_ip"]):
+            # IOS answers SSH on a brand-new SVI only after a while (IOL: still refused 30 s after the merge, fine a
+            # minute later): ask for up to a minute before keeping the old address. A box whose new address is
+            # behind another cable stays on the old one after that minute, as before.
+            if method == "ssh" and old_ip and old_ip != a["mgmt_ip"] and not self._wait_reachable(
+                    self.db.device(device_id), a["mgmt_ip"], 60):
                 detail = f"{detail}; still using {old_ip} (new mgmt IP {a['mgmt_ip']} not reachable from here yet)"
                 self.db.x("UPDATE devices SET hostname=? WHERE id=?", a["hostname"], device_id)
             else:
@@ -717,6 +720,15 @@ class Ctx:
         errors = [l for l in out.splitlines() if l.startswith("%") and "Invalid" in l]
         self.finish(dev["id"], "ssh", not errors, "; ".join(errors) or note)
 
+    def _wait_reachable(self, dev, ip, timeout) -> bool:
+        end = time.time() + timeout
+        while True:
+            if self.reachable(dev, ip):
+                return True
+            if time.time() >= end:
+                return False
+            time.sleep(3)
+
     @staticmethod
     def _wait_ssh(ip, timeout=90.0) -> bool:
         end = time.time() + timeout
@@ -760,6 +772,17 @@ def no_crypto(conn) -> bool:
     conn.exit_config_mode()
     return bool(image) and "k9" not in image and bool(
         re.search(r"^\s*% (Invalid input detected|Unrecognized command)", out, re.M))
+
+
+_IOS_ERROR = re.compile(r"^\s*%\s*(Invalid|Incomplete|Ambiguous|Unrecognized|Error|Bad |Command rejected|"
+                        r".*\b(not allowed|failed|cannot|can't|unable)\b)", re.I | re.M)
+
+
+def ios_errors(text: str) -> list[str]:
+    """The `%` lines that mean IOS refused something. IOS also prints `%` notes on success ("%Portfast has been
+    configured on Ethernet0/2 but will only have effect when the interface is in a non-trunking mode", seen on IOL
+    while making a provisioning backbone): those are not failures."""
+    return [m.group(0).strip() for m in re.finditer(r"^.*$", text, re.M) if _IOS_ERROR.match(m.group(0))]
 
 
 # The only vars the onboarding wizard may set: what switch_access.j2 / router_edge.j2 read.

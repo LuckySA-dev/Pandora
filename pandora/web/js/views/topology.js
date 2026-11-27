@@ -44,6 +44,8 @@ export async function mount(root) {
   async function fetchGraph(fresh) {
     const btn = $("#refresh-btn", root);
     btn?.classList.add("busy");
+    const wait = $("#topo-lede", root);  // the first collection asks every device (SNMP, then SSH): say so
+    if (wait && (fresh || !s.nodes.size)) wait.textContent = "Collecting links from the devices (CDP and LLDP)… this can take a minute.";
     const g = await attempt(() => api.get("/api/topology", { fresh: fresh || "" }));
     btn?.classList.remove("busy");
     if (!g) return;

@@ -36,6 +36,7 @@ IF_OPER = "1.3.6.1.2.1.2.2.1.8"
 IF_HC_IN = "1.3.6.1.2.1.31.1.1.1.6"
 IF_HC_OUT = "1.3.6.1.2.1.31.1.1.1.10"
 IF_ADMIN = "1.3.6.1.2.1.2.2.1.7"            # 1 up, 2 down (shut), 3 testing
+IP_ADDR_IF = "1.3.6.1.2.1.4.20.1.2"         # ipAdEntIfIndex, indexed by the address itself
 IF_IN_ERR = "1.3.6.1.2.1.2.2.1.14"
 IF_OUT_ERR = "1.3.6.1.2.1.2.2.1.20"
 IF_HIGH_SPEED = "1.3.6.1.2.1.31.1.1.1.15"   # Mbit/s
@@ -235,6 +236,11 @@ async def poll(ip, a) -> dict:
                         v = {"1": "up", "2": "down", "3": "testing"}.get(str(v), str(v))
                     out[f"{name}:{label}"] = str(v)
         out["_ifindex"] = ifn
+        try:  # IP-MIB ipAdEntIfIndex: which port holds which address (the one PandoraBox uses must never be shut)
+            out["_ipif"] = {k[len(IP_ADDR_IF) + 1:]: ifn.get(str(v)) for k, v in (await walk(ip, a, IP_ADDR_IF, s=s)).items()
+                            if ifn.get(str(v))}
+        except Exception:
+            pass
         try:  # an image without the MIB just answers nothing
             used, free = (list((await walk(ip, a, b, s=s)).values()) for b in (MEM_USED, MEM_FREE))
             if used and free and int(used[0]) + int(free[0]):

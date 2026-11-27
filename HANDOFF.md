@@ -30,6 +30,36 @@ Stack: Python 3.12, FastAPI, SQLite, netmiko/paramiko (pinned <5, see below), py
 - Code changes need a PandoraBox restart. The user repeatedly answered "restarted" without having done it: check the process start time (`Get-CimInstance Win32_Process -Filter "Name='python.exe'"`) before believing a fix is live.
 - The bench laptop: provisioning NIC `Ethernet` (Intel I219-LM) 10.99.0.1/24, Wi-Fi `10.110.x` for internet, Npcap installed, console cable usually on **COM7** (Tera Term often holds it; PandoraBox's watcher then logs "Access is denied", harmless).
 
+## Backbone, SNMP, live status, uplinks (2026-11-27)
+
+The user asked for four things and to try them by clicking in the real UI, not only tests. All four were clicked
+through on `lab/backbone.clab.yml` (PC -> switch `bb` -> two factory-blank routers), then 96 unit tests and the
+simulated lab 26/26.
+
+- [x] **Provisioning backbone** (`pandora/backbone.py`, device page -> Provisioning backbone): a configured switch's
+  free front-panel ports join the provisioning VLAN (portfast, up); never uplinks, PandoraBox's port, routed ports
+  (any port with an address), management-design links, trunks. Its CDP + MAC tables (SSH, every 30 s and on "Who is
+  plugged in") say which box is on which port; a box being onboarded learns its model and its port facing us
+  (`seen_port` = its mgmt port) and gets `behind` ("Plugged into lab-sw-01 Ethernet0/2"). Proven: the two blank
+  routers seen on Et0/2 / Et0/3 with their port Ethernet0/0; box 61 onboarded over PnP through the backbone with
+  nothing typed (Review filled Ethernet0/0), then SSH-completed through it.
+- [x] **SNMP in full**: per port admin state, speed, description, errors, bps rates (from counter deltas); memory,
+  fans, PSUs, temperature (CISCO-MEMORY-POOL / CISCO-ENVMON); traps name the port (ipAdEntIfIndex / ifName maps);
+  a port shut on purpose is no alarm. Ports table on the device page with **Shut / Enable** (SSH, saved, confirm);
+  ports PandoraBox needs are refused (reserved, design links, `seen_port`, and the port holding the address in use).
+- [x] **Live status** (`pandora/status.py`): Ready only when configured, answering SNMP and healthy; Offline,
+  Degraded, Just restarted (uptime < 15 min), Config drifted, Configured (not seen by SNMP yet). Proven: box 61's port
+  shut -> Offline after 3 missed polls (info note "Offline: no SNMP answer since …"), port back + poll -> Ready, 0 problems.
+- [x] **Uplinks apart** (`pandora/ports.py`): front panel / uplink / out-of-band from names + model (C9300 modules,
+  3560G-48TS SFPs 49-52, 2960 GE next to FE, Gi0/0 OOB; IOL slots all front panel); the faceplate draws uplinks as
+  SFP cages in their own block. Not seen on IOL (no uplinks there): unit-tested only.
+- Bugs the click-through found and fixed: Et0/0 (routed, clab mgmt) offered as a provisioning port; IOS's
+  "%Portfast has been configured ..." note taken as an error after the config was already in (`deliver.ios_errors`
+  now counts only real refusals); Shut offered on the port holding the address PandoraBox uses; an SSH merge kept the
+  old address because IOS answers SSH on a new SVI only ~1 min later (`finish` now waits up to 60 s); the Topology page
+  showed an empty canvas with no hint during its first collection.
+- [ ] Not yet on real hardware: the backbone, the ENVMON / memory values, the uplink block.
+
 ## Real hardware bench (2026-11-26)
 
 ### Devices proven
@@ -163,6 +193,7 @@ Note 2026-11-26: on this bench laptop (user `Sirirod`) WSL has **no distribution
 | `lab/small.clab.yml` | pandora + core (router) + acc1/acc2 (L2), mgmt 172.30.30.0/24 | `docker exec clab-pandora-small-pandora python scripts/clab_check.py` | the check brings up core e0/1-2 (IOL router re-shuts ports after boot) |
 | `lab/ztp.clab.yml` | pandora (eth1 10.99.0.1) + sw + blank1/blank3 (router) + blank2 (L2), mgmt 172.30.31.0/24 | `docker exec clab-pandora-ztp-pandora python scripts/ztp_check.py` | fresh deploy before every run; blanks boot only when the check starts the console relay |
 | `lab/medium.clab.yml` | pandora + r1/r2 + d1/d2 + a1-a8, mgmt 172.30.32.0/24 | `docker exec clab-pandora-medium-pandora python scripts/clab_check.py lab/medium.clab.yml` | scale run; same checks as small |
+| `lab/backbone.clab.yml` + `lab/backbone-pandora.sh` | pandora (eth1) -> IOL L2 `bb` (Et0/1); factory-blank routers blank1/blank2 on bb Et0/2 / Et0/3, mgmt 172.30.34.0/24, UI on localhost:8099 | by hand in the UI: Add by IP bb (172.30.34.10, admin/admin), onboard it, make it the provisioning backbone, onboard the blanks through it | the provisioning backbone, end to end |
 | `lab/extra.clab.yml` + `lab/extra-pandora.sh` | a factory-blank IOL router `blank` cabled to the medium lab's PandoraBox (eth2, bridged with eth1 into br0); the app restarted on the same DB with DHCP/TFTP/PnP | onboard it by hand in the UI: it arrives over DHCP + PnP | added to a running medium lab without redeploying it; proven: DHCP (ciscopnp) -> PnP HELLO + device-info -> Identified, waiting for the user |
 | `lab/large.clab.yml` | pandora + r1/r2 + d1-d4 + a1-a34, mgmt 172.30.33.0/24 | `docker exec clab-pandora-large-pandora python scripts/clab_check.py lab/large.clab.yml` | 40 IOL, ~6 GB; 16/16 incl. the design with 4 backbones |
 

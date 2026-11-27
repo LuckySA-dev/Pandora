@@ -14,6 +14,7 @@ import logging
 import re
 
 from . import alloc, ports
+from .deliver import ios_errors
 
 log = logging.getLogger("pandora.backbone")
 DESC = "PANDORA-PROVISION"
@@ -64,7 +65,12 @@ def candidates(ctx, device_id) -> list[dict]:
     dev = _check(ctx, device_id)
     with ctx.session(dev) as c:
         c.enable()
-        names = alloc.parse_ifnames(c.send_command("show ip interface brief"))
+        brief = c.send_command("show ip interface brief")
+        names = alloc.parse_ifnames(brief)
+        # a port with an address is a routed port (`no switchport`, an out-of-band or lab management port: IOL e0/0
+        # in containerlab was offered and would have cut the box off): never a provisioning port
+        routed = {alloc.normalize_if(m.group(1)) for m in re.finditer(
+            r"^(\S+?\d+(?:/\d+)*)\s+\d+\.\d+\.\d+\.\d+\s+(?:YES|NO)\s", brief, re.M)}
         trunks = {alloc.normalize_if(m) for m in re.findall(r"^(\S+\d)\s+(?:on|auto|desirable)\s", c.send_command(
             "show interfaces trunk"), re.M)}
         cdp = c.send_command("show cdp neighbors detail", use_textfsm=True)
@@ -75,7 +81,7 @@ def candidates(ctx, device_id) -> list[dict]:
     out = []
     for n in sorted(names, key=ports.sort_key):
         kind = kinds.get(n)
-        if kind != "access" or n in taken or n in trunks or n in active(ctx, device_id):
+        if kind != "access" or n in taken or n in trunks or n in routed or n in active(ctx, device_id):
             continue  # uplinks, PandoraBox's own port, design links, trunks and ports already provisioning
         r = nb.get(n) or {}
         peer = (r.get("destination_host") or r.get("neighbor_name") or "").split(".")[0]
@@ -103,7 +109,7 @@ def enable(ctx, device_id, wanted: list[str]) -> list[str]:
         raise ValueError("choose at least one port")
     dev = ctx.db.device(device_id)
     out = ctx.ssh_config(dev, lines_for(chosen, ctx.cfg["mgmt_vlan"]))
-    if bad := [ln.strip() for ln in out.splitlines() if ln.strip().startswith("%") and "Warning" not in ln]:
+    if bad := ios_errors(out):
         raise RuntimeError("; ".join(bad))
     keep = sorted(set(active(ctx, device_id)) | set(chosen), key=ports.sort_key)
     ctx.db.set_vars(device_id, {**ctx.db.vars(device_id), "backbone_ports": keep})
@@ -118,7 +124,7 @@ def disable(ctx, device_id) -> list[str]:
     dev, was = _check(ctx, device_id), active(ctx, device_id)
     if was:
         out = ctx.ssh_config(dev, [f"default interface {p}" for p in was])
-        if bad := [ln.strip() for ln in out.splitlines() if ln.strip().startswith("%")]:
+        if bad := ios_errors(out):
             raise RuntimeError("; ".join(bad))
     v = ctx.db.vars(device_id)
     v.pop("backbone_ports", None)

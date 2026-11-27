@@ -508,3 +508,11 @@ def test_backbone_reads_who_is_on_which_port_from_the_mac_table(ctx):
     ctx.db.set_vars(d["id"], {"backbone_ports": ["GigabitEthernet1/0/5"]})
     text, _, _ = ctx.render(d["id"])
     assert "interface GigabitEthernet1/0/5\n description PANDORA-PROVISION\n switchport mode access\n" in text
+
+
+def test_ios_notes_are_not_errors():
+    from pandora.deliver import ios_errors
+    out = ("bb(config-if)# spanning-tree portfast\n%Portfast has been configured on Ethernet0/2 but will only\n"
+           " have effect when the interface is in a non-trunking mode.\n% Invalid input detected at '^' marker.\n"
+           "% Command rejected: Bad VLAN list\n%Warning: portfast should only be enabled on ports connected to a host")
+    assert ios_errors(out) == ["% Invalid input detected at '^' marker.", "% Command rejected: Bad VLAN list"]
