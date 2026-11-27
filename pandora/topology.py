@@ -2,7 +2,7 @@
 import asyncio
 import logging
 
-from . import snmp
+from . import ports, snmp
 from .alloc import normalize_if
 
 log = logging.getLogger("pandora.topology")
@@ -30,6 +30,11 @@ def build(devices: list[dict], neighbors: dict, sniffed: list[dict], backbones=f
 
     def add(a, a_port, b, b_port, via):
         a_port, b_port = normalize_if(a_port), normalize_if(b_port)
+        # between two inventory devices the design may write both names into config: plain port names only. An
+        # outside neighbour's LLDP "port" (often a MAC or a description) is only drawn, and the UI escapes it.
+        if isinstance(a, int) and isinstance(b, int) and not all(ports.safe_name(p) for p in (a_port, b_port)):
+            log.warning("dropped a link with a port name that isn't one: %r / %r", a_port[:60], b_port[:60])
+            return  # neighbours advertise these names; the design writes them into `interface <name>` lines
         k = frozenset([(str(a), a_port), (str(b), b_port)])  # both ends report the same link once
         if k not in seen:
             seen.add(k)

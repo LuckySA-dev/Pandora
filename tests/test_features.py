@@ -529,3 +529,28 @@ def test_a_warning_that_reports_a_failure_is_an_error():
     assert ios_errors("%Warning: the command failed to apply\n%Warning: something else\n"
                       "%Warning: portfast should only be enabled on ports connected to a single host") == [
         "%Warning: the command failed to apply", "%Warning: something else"]
+
+
+def test_device_supplied_names_cannot_add_config_lines(ctx):
+    from pandora import ports, topology
+    evil = "Gi0/1\nusername x privilege 15 secret y"
+    assert ports.parse("Gi1/0/1\nshutdown") is None and not ports.safe_name(evil) and ports.safe_name("Gi1/0/1.10")
+    g = topology.build([{"id": 1, "hostname": "a", "state": "provisioned"}, {"id": 2, "hostname": "b", "state": "provisioned"}],
+                       {1: [{"local_port": "Gi1/0/1", "remote_name": "b", "remote_port": evil, "via": "cdp"},
+                            {"local_port": "Gi1/0/2", "remote_name": "printer", "remote_port": "00:11:22:33:44:55",
+                             "via": "lldp"}]}, [])
+    assert [(e["from"], e["to"]) for e in g["edges"]] == [(1, "ext:printer")]  # evil link dropped, outside one drawn
+    d = add(ctx, 98)
+    ctx.db.update(d["id"], ip="10.99.0.98")
+    ctx.learn_from_neighbor({"via": "cdp", "addresses": ["10.99.0.98"], "remote_port": evil, "platform": "cisco X"})
+    assert "seen_port" not in ctx.db.vars(d["id"])
+
+
+def test_csv_export_keeps_formulas_as_text(ctx):
+    from fastapi.testclient import TestClient
+
+    from pandora.app import create_app
+    d = add(ctx, 99)
+    ctx.db.update(d["id"], hostname='=HYPERLINK("http://x","y")')
+    text = TestClient(create_app(ctx, background=False)).get("/api/devices.csv").text
+    assert "'=HYPERLINK" in text and ',=HYPERLINK' not in text

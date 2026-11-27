@@ -114,7 +114,11 @@ def router(ctx):
         buf = io.StringIO()
         w = csv.DictWriter(buf, CSV_COLS, extrasaction="ignore")
         w.writeheader()
-        w.writerows(device_rows(ctx, q, state=state))
+        # Excel / LibreOffice run a cell starting with = + - @ (or tab / CR) as a formula, and hostnames, models and
+        # serials come from the devices themselves: such a cell gets a leading ' so it stays text (OWASP CSV injection)
+        def cell(v):
+            return "'" + v if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+        w.writerows({k: cell(v) for k, v in d.items()} for d in device_rows(ctx, q, state=state))
         return Response(buf.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": "attachment; filename=pandorabox-inventory.csv"})
 

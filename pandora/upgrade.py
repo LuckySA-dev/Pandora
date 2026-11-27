@@ -27,6 +27,10 @@ def images() -> list[dict]:
     FOLDER.mkdir(parents=True, exist_ok=True)
     out = []
     for p in sorted(FOLDER.glob("*.bin")):
+        if not re.fullmatch(r"[\w.+-]{1,120}\.bin", p.name):
+            log.warning("image %r skipped: its name goes into IOS commands, only letters, digits and ._+- are taken",
+                        p.name)
+            continue
         st = p.stat()
         key = (p.name, st.st_size, st.st_mtime)
         if key not in _md5:

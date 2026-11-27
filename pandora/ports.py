@@ -19,7 +19,7 @@ _NAME = re.compile(r"^([A-Za-z-]+?)(\d+(?:/\d+)*)$")
 
 def parse(name: str):
     """'GigabitEthernet1/0/24' or 'Gi1/0/24' -> ('gi', (1, 0, 24)); None for anything not a physical port."""
-    m = _NAME.match(str(name).strip())
+    m = _NAME.fullmatch(str(name).strip())
     if not m or m.group(1).lower().startswith("ap"):  # AppGigabitEthernet: the app-hosting port, not a jack
         return None
     kind = m.group(1)[:2].lower()
@@ -27,6 +27,16 @@ def parse(name: str):
         return None
     nums = tuple(int(x) for x in m.group(2).split("/"))
     return (kind, nums) if len(nums) >= 2 else None
+
+
+# A port name as it may go into a config line (`interface <name>`): letters, then slot/port numbers, maybe a
+# subinterface. Names come from devices (CDP advertisements, ifName): anything else, a line break above all, would
+# add lines of its own to the config PandoraBox pushes.
+SAFE_NAME = re.compile(r"[A-Za-z][A-Za-z-]{0,40}\d{1,4}(?:/\d{1,4}){0,3}(?:\.\d{1,5})?")
+
+
+def safe_name(name) -> bool:
+    return bool(SAFE_NAME.fullmatch(str(name or "")))
 
 
 def model_count(pid: str | None) -> int | None:

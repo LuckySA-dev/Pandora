@@ -7,7 +7,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from . import access, alloc, hostkeys, platforms, snmp
+from . import access, alloc, hostkeys, platforms, ports, snmp
 from .identify import guess_path, parse_show_version
 from .net.dhcp import ip_opt, opt43_pnp
 
@@ -409,6 +409,9 @@ class Ctx:
         if not dev or dev["state"] in ("provisioning", "provisioned"):
             return None
         port = alloc.normalize_if(n.get("remote_port") or "")
+        if port and not ports.safe_name(port):  # the box advertised it: it becomes its `interface <name>` line
+            log.warning("CDP port name %r from device %s is not a port name: ignored", port[:60], dev["id"])
+            port = ""
         pid = re.sub(r"^cisco\s+", "", (n.get("platform") or "").strip(), flags=re.I).split(" ")[0]
         vars_ = self.db.vars(dev["id"])
         changed = False
