@@ -60,8 +60,9 @@ simulated lab 26/26.
   showed an empty canvas with no hint during its first collection.
 - [x] 2026-11-28 backbone **Stop** clicked in the lab: ports back to `default interface` (checked in the backup).
   Bug found and fixed: the box's config-change inform started compliance before `enable` / `disable` updated
-  `backbone_ports`, so Stop left the switch "drifted" on its own clean change; the vars now change first and are
-  restored if the push fails. Enable -> Compliant, Stop -> Compliant, no problems.
+  `backbone_ports`, so Stop left the switch "drifted" on its own clean change. The record still changes only after
+  the box confirmed (a cut push leaves the ports listed, with a Stop), then compliance runs again (`_recheck`).
+  Enable -> Compliant, Stop -> Compliant, no problems (twice).
 - [ ] Not yet on real hardware: the backbone, the ENVMON / memory values, the uplink block.
 
 ## Real hardware bench (2026-11-26)
