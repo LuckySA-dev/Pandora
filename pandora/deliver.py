@@ -24,6 +24,9 @@ class Ctx:
         self.template_dir = str(Path(__file__).parent / "templates")
         self.env = Environment(loader=FileSystemLoader(self.template_dir), trim_blocks=True, lstrip_blocks=True)
         self.sniffed: list[dict] = []  # CDP/LLDP neighbors heard on the laptop NIC
+        # device_id -> until when its configChange informs are our own `?` probes (classic IOS reports entering
+        # config mode as a write): monitor.on_trap skips the backup they would trigger. A real change clears it.
+        self.probed_until: dict[int, float] = {}
 
     # ---- render ----------------------------------------------------------
     def render(self, device_id, factory=False, autosave=False) -> tuple[str, list[str], dict]:
@@ -88,7 +91,7 @@ class Ctx:
             dev = self.db.device(i)
             text, problems, a = self.render(i)
             rows.append({"id": i, "path": dev["path"] or guess_path(dev), "serial": dev["serial"], "pid": dev["pid"],
-                         **a, "config": text, "problems": problems})
+                         **a, "config": text, "problems": problems, "staged": bool(self.db.vars(i).get("staged"))})
         return rows
 
     # ---- queue -----------------------------------------------------------
@@ -536,8 +539,7 @@ class Ctx:
         text, problems, _ = self.render(device_id)  # the full config, now with the real port names
         if problems:
             return False, "stage 2: " + "; ".join(problems)
-        out = self.ssh_config(self.db.device(device_id),
-                              [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("!")])
+        out = self.ssh_config(self.db.device(device_id), self.lines_with_cleanup(text, caps))
         errors = [ln for ln in out.splitlines() if ln.startswith("%") and "Invalid" in ln]
         return not errors, "; ".join(errors) or (f"two-stage AutoInstall: {dev['pid'] or 'switch'}, PC on {pc}, "
                                                  f"management moved to VLAN {vlan} on {', '.join(ports)} + saved")
@@ -576,7 +578,7 @@ class Ctx:
             text, problems, _ = self.render(device_id)
             if problems:
                 raise RuntimeError("; ".join(problems))
-            out = self.ssh_config(dev, [l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("!")])
+            out = self.ssh_config(dev, self.lines_with_cleanup(text, caps))
             errors = [l for l in out.splitlines() if l.startswith("%") and "Invalid" in l]
             result = "; ".join(errors) or "capability-dependent lines added over SSH"
         except Exception as e:
@@ -663,6 +665,7 @@ class Ctx:
             return conn.send_command(cmd, use_textfsm=use_textfsm)
 
     def ssh_config(self, dev, lines) -> str:
+        self.probed_until.pop(dev["id"], None)  # a real change: its inform should bring a backup
         with self.session(dev) as conn:
             conn.enable()
             # A "hostname" line changes the prompt mid-session, and netmiko would wait for the old one
@@ -689,7 +692,17 @@ class Ctx:
             caps = parse_caps(*map(ask, CAP_QUESTIONS))
             if names := alloc.parse_ifnames(conn.send_command("show ip interface brief")):
                 caps["cap_ifnames"] = names  # its real port names: render refuses any other
+            caps["pnp_zero_touch"] = has_pnp_zero_touch(conn.send_command("show running-config | include ^pnp profile"))
+        self.probed_until[dev["id"]] = time.time() + 30  # informs arrive within seconds of the session
         return ver, caps
+
+    @staticmethod
+    def lines_with_cleanup(text, caps) -> list[str]:
+        """The rendered config as lines to send, plus `no pnp profile pnp-zero-touch` when the box still has the
+        profile its PnP agent made while it was factory-fresh (bench 2960X after an SSH merge: the agent kept calling
+        PandoraBox every few seconds and got backoff forever). Only that auto-made profile, never one a person set."""
+        lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("!")]
+        return lines + (["no pnp profile pnp-zero-touch"] if caps.get("pnp_zero_touch") else [])
 
     def _push_ssh(self, dev):
         if not self.reachable(dev):
@@ -704,7 +717,7 @@ class Ctx:
         text, problems, a = self.render(dev["id"])
         if problems:
             raise RuntimeError("; ".join(problems))
-        lines = [l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("!")]
+        lines = self.lines_with_cleanup(text, caps)
         cur = self.db.device(dev["id"])
         try:
             out = self.ssh_config(cur, lines)
@@ -801,6 +814,10 @@ class NeedCredentials(Exception):
 
 CAP_QUESTIONS = ("line vty 0", "snmp-server group PANDORA v3", "snmp-server enable traps", "ip routing",
                  "ip ssh")  # + " ?"
+
+
+def has_pnp_zero_touch(run_lines: str) -> bool:
+    return any(ln.strip() == "pnp profile pnp-zero-touch" for ln in run_lines.splitlines())
 
 
 def parse_caps(vty_help: str, group_help: str, traps_help: str, routing_help: str = "", ssh_help: str = "") -> dict:

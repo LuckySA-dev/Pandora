@@ -13,6 +13,8 @@ MEM_HIGH = 90          # % of the processor memory pool          # % (5 min), li
 UNREACHABLE_AFTER = 3  # consecutive failed polls
 
 _fails: dict[int, int] = {}
+# ponytail: in memory, so after a restart a reserved port that is down alarms only once it has been up again
+_was_up: set[tuple[int, str]] = set()  # (device_id, port) seen up at least once
 
 
 def raise_(ctx, device_id, key, severity, message):
@@ -77,8 +79,12 @@ def on_sample(ctx, device, sample: dict, prev: dict | None):
         key = f"if:{normalize_if(port)}"
         was_up = prev is not None and prev.get(k) == "up"
         shut = sample.get(f"{port}:admin") == "down"  # someone shut it on purpose: not a fault
-        if v == "down" and normalize_if(port) in reserved:
+        if v == "up":
+            _was_up.add((did, normalize_if(port)))
+        if v == "down" and normalize_if(port) in reserved and (shut or (did, normalize_if(port)) in _was_up):
             raise_(ctx, did, key, "high", f"Management port {port} is {'shut down' if shut else 'down'}")
+        elif v == "down" and normalize_if(port) in reserved:
+            resolve(ctx, did, key)  # the spare of two reserved ports, never cabled: no fault (bench 2960X)
         elif shut:
             resolve(ctx, did, key)
         elif v == "down" and was_up:

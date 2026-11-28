@@ -172,7 +172,7 @@ def run(ctx, device_id, img) -> tuple[bool, str]:
         text, problems, _ = ctx.render(device_id)
         if problems:
             return False, f"on {name} with SSH, but the config can't be rendered: {'; '.join(problems)}"
-        lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("!")]
+        lines = ctx.lines_with_cleanup(text, caps)
     else:
         lines = [f"line vty 0 {caps.get('cap_vty_last', 4)}", " transport input ssh"]
     out = ctx.ssh_config(dev, lines)

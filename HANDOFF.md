@@ -58,6 +58,10 @@ simulated lab 26/26.
   now counts only real refusals); Shut offered on the port holding the address PandoraBox uses; an SSH merge kept the
   old address because IOS answers SSH on a new SVI only ~1 min later (`finish` now waits up to 60 s); the Topology page
   showed an empty canvas with no hint during its first collection.
+- [x] 2026-11-28 backbone **Stop** clicked in the lab: ports back to `default interface` (checked in the backup).
+  Bug found and fixed: the box's config-change inform started compliance before `enable` / `disable` updated
+  `backbone_ports`, so Stop left the switch "drifted" on its own clean change; the vars now change first and are
+  restored if the push fails. Enable -> Compliant, Stop -> Compliant, no problems.
 - [ ] Not yet on real hardware: the backbone, the ENVMON / memory values, the uplink block.
 
 ## Real hardware bench (2026-11-26)
@@ -119,9 +123,10 @@ Process and install
   - `access.ssh_open` now needs the SSH greeting on 22 and a non-refusing answer on 23 (an open TCP port alone said "SSH" for boxes that close at once).
   - Proven on the simulated lab (26/26: a non-K9 fake with a real TFTP copy and reload). Not yet on the real 3560 / 2960: needs the K9 image file from the user.
 - [ ] 3560G (#5) still lacks `login local` / `transport input ssh` on vty 5-15 (pushed before stage 2 probed caps; fixed for new boxes): **Check compliance → Fix** on it. The user chose to leave it for now.
-- [ ] 2960X: `pnp profile pnp-zero-touch` stays after an SSH merge (the agent keeps calling, gets backoff). An unused reserved port raises a high "management port down".
-- [ ] Classic IOS reports `?` probes as config writes, so probes trigger a backup each (bounded). Could skip configChange backups right after our own sessions.
-- [ ] UI: the empty "Reserved mgmt ports" box shows the placeholder `Gi1/0/47, Gi1/0/48` even for a two-stage box; say "learned from the box after boot" there.
+- [x] 2960X: `pnp profile pnp-zero-touch` stayed after an SSH merge. `probe` now reads `show running-config | include ^pnp profile`; every full merge (SSH, ssh-complete, stage 2, K9 upgrade) adds `no pnp profile pnp-zero-touch` when that auto-made profile is there (never another profile).
+- [x] An unused reserved port (the spare of two, never cabled) no longer raises a high "management port down": only once that port has been up (or someone shut it). In memory: after an app restart a down reserved port alarms only once it was up again.
+- [x] `?` probes no longer trigger a backup each: `probe` marks the box for 30 s (`Ctx.probed_until`), `monitor.on_trap` skips configChange backups then; a real change (`ssh_config`) clears the mark.
+- [x] UI: a two-stage box's empty "Reserved mgmt ports" box says "Learned from the box after it boots".
 - [ ] Two-stage AutoInstall is switch-only; an AutoInstall router with no known model still needs typed ports (ISR G2 have PnP, which gives the model).
 
 ## Done (before the bench day)

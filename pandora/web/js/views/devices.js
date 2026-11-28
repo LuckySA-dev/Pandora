@@ -124,7 +124,7 @@ function review(ob) {
     <div class="scroll-x"><table class="table"><thead><tr><th>Device</th><th>Hostname</th><th>Mgmt IP</th><th>Reserved mgmt ports</th><th>Delivery</th><th>Check</th></tr></thead>
     <tbody>${ob.rows.map((r) => html`<tr>
       <td>${r.serial || r.pid || `#${r.id}`}</td><td>${r.hostname}</td><td>${r.mgmt_ip}</td>
-      <td><input data-ports="${r.id}" value="${(r.reserved_ports || []).join(", ")}" placeholder="Gi1/0/47, Gi1/0/48" aria-label="Reserved ports" style="min-width:220px"></td>
+      <td><input data-ports="${r.id}" value="${(r.reserved_ports || []).join(", ")}" placeholder="${r.staged ? "Learned from the box after it boots" : "Gi1/0/47, Gi1/0/48"}" aria-label="Reserved ports" style="min-width:220px"></td>
       <td>${PATH_LABEL[r.path] || r.path}</td>
       <td>${r.problems.length ? html`<span style="color:var(--led-red)">${r.problems.join("; ")}</span>` : html`<span class="state"><span class="led green"></span>OK</span>`}</td></tr>
       <tr><td></td><td colspan="5"><details><summary class="muted">Configuration that will be sent</summary><pre class="config">${r.config}</pre></details></td></tr>`)}
