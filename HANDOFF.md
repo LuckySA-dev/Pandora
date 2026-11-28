@@ -124,8 +124,8 @@ Process and install
   - Proven on the simulated lab (26/26: a non-K9 fake with a real TFTP copy and reload). Not yet on the real 3560 / 2960: needs the K9 image file from the user.
 - [ ] 3560G (#5) still lacks `login local` / `transport input ssh` on vty 5-15 (pushed before stage 2 probed caps; fixed for new boxes): **Check compliance → Fix** on it. The user chose to leave it for now.
 - [x] 2960X: `pnp profile pnp-zero-touch` stayed after an SSH merge. `probe` now reads `show running-config | include ^pnp profile`; every full merge (SSH, ssh-complete, stage 2, K9 upgrade) adds `no pnp profile pnp-zero-touch` when that auto-made profile is there (never another profile).
-- [x] An unused reserved port (the spare of two, never cabled) no longer raises a high "management port down": only once that port has been up (or someone shut it). In memory: after an app restart a down reserved port alarms only once it was up again.
-- [x] `?` probes no longer trigger a backup each: `probe` marks the box for 30 s (`Ctx.probed_until`), `monitor.on_trap` skips configChange backups then; a real change (`ssh_config`) clears the mark.
+- [x] An unused reserved port (the spare of two, never cabled) no longer raises a high "management port down": only once that port has ever been up (memory, else the stored `snmp_samples`, so a restart doesn't forget) or someone shut it. An alarm already open is never auto-resolved by this.
+- [ ] Classic IOS reports `?` probes as config writes, so probes trigger a backup each (bounded). A 30 s skip window was tried and dropped (security review: a real change in that window would go unbacked-up). Only a skip that proves nothing changed (e.g. compare `Last configuration change` before/after) is acceptable.
 - [x] UI: a two-stage box's empty "Reserved mgmt ports" box says "Learned from the box after it boots".
 - [ ] Two-stage AutoInstall is switch-only; an AutoInstall router with no known model still needs typed ports (ISR G2 have PnP, which gives the model).
 

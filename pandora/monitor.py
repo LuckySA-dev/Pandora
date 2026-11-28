@@ -118,8 +118,6 @@ def on_trap(ctx, src, name, varbinds):
     port = (LAST.get(dev["id"], {}).get("_ifindex") or {}).get(index) if dev else None
     alerts.on_trap(ctx, dev, name, varbinds, port=port)
     if name == "configChange" and dev and config_written(varbinds):  # Oxidized-style: fetch right after the change
-        if getattr(ctx, "probed_until", {}).get(dev["id"], 0) > time.time():
-            return  # our own `?` capability probe, which classic IOS reports as a config write: nothing changed
         schedule_backup(ctx, dev["id"])
 
 

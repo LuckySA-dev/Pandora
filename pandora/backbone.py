@@ -107,36 +107,38 @@ def enable(ctx, device_id, wanted: list[str]) -> list[str]:
         raise ValueError(f"not a free front-panel port of this switch: {', '.join(bad)}")
     if not chosen:
         raise ValueError("choose at least one port")
-    dev, before = ctx.db.device(device_id), ctx.db.vars(device_id)
+    dev = ctx.db.device(device_id)
+    out = ctx.ssh_config(dev, lines_for(chosen, ctx.cfg["mgmt_vlan"]))
+    if bad := ios_errors(out):
+        raise RuntimeError("; ".join(bad))
     keep = sorted(set(active(ctx, device_id)) | set(chosen), key=ports.sort_key)
-    # vars first: the box's config-change inform starts a compliance run within a second, often before the push
-    # returns; it must already expect the new ports (Stop in the lab: "drifted" right after a clean change)
-    ctx.db.set_vars(device_id, {**before, "backbone_ports": keep})
-    try:
-        out = ctx.ssh_config(dev, lines_for(chosen, ctx.cfg["mgmt_vlan"]))
-        if bad := ios_errors(out):
-            raise RuntimeError("; ".join(bad))
-    except Exception:
-        ctx.db.set_vars(device_id, before)
-        raise
+    ctx.db.set_vars(device_id, {**ctx.db.vars(device_id), "backbone_ports": keep})
+    _recheck(ctx, device_id)
     ctx.db.save_config(device_id, "backbone", "\n".join(lines_for(chosen, ctx.cfg["mgmt_vlan"])), "ok")
     ctx.db.audit("user", "backbone:on", {"id": device_id, "ports": chosen})
     ctx.emit("device", ctx.db.device(device_id))
     return chosen
 
 
+def _recheck(ctx, device_id):
+    """The box's config-change inform starts a compliance run within a second, often before the record above is
+    updated (lab: Stop left the switch "drifted" on its own clean change). Check again now that it is: folded into
+    the running one if there is one."""
+    from . import monitor
+    monitor.schedule_backup(ctx, device_id)
+
+
 def disable(ctx, device_id) -> list[str]:
     """Provisioning ports back to factory defaults (`default interface`), the switch is a plain switch again."""
-    dev, was, before = _check(ctx, device_id), active(ctx, device_id), ctx.db.vars(device_id)
-    ctx.db.set_vars(device_id, {k: v for k, v in before.items() if k != "backbone_ports"})  # before the push: see enable
-    if was:
-        try:
-            out = ctx.ssh_config(dev, [f"default interface {p}" for p in was])
-            if bad := ios_errors(out):
-                raise RuntimeError("; ".join(bad))
-        except Exception:
-            ctx.db.set_vars(device_id, before)
-            raise
+    dev, was = _check(ctx, device_id), active(ctx, device_id)
+    if was:  # the record stays until the box confirms: a failed or cut push leaves the ports listed (and a Stop)
+        out = ctx.ssh_config(dev, [f"default interface {p}" for p in was])
+        if bad := ios_errors(out):
+            raise RuntimeError("; ".join(bad))
+    v = ctx.db.vars(device_id)
+    v.pop("backbone_ports", None)
+    ctx.db.set_vars(device_id, v)
+    _recheck(ctx, device_id)
     ctx.db.audit("user", "backbone:off", {"id": device_id, "ports": was})
     ctx.emit("device", ctx.db.device(device_id))
     return was

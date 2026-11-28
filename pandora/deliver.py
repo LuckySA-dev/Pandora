@@ -24,9 +24,6 @@ class Ctx:
         self.template_dir = str(Path(__file__).parent / "templates")
         self.env = Environment(loader=FileSystemLoader(self.template_dir), trim_blocks=True, lstrip_blocks=True)
         self.sniffed: list[dict] = []  # CDP/LLDP neighbors heard on the laptop NIC
-        # device_id -> until when its configChange informs are our own `?` probes (classic IOS reports entering
-        # config mode as a write): monitor.on_trap skips the backup they would trigger. A real change clears it.
-        self.probed_until: dict[int, float] = {}
 
     # ---- render ----------------------------------------------------------
     def render(self, device_id, factory=False, autosave=False) -> tuple[str, list[str], dict]:
@@ -665,7 +662,6 @@ class Ctx:
             return conn.send_command(cmd, use_textfsm=use_textfsm)
 
     def ssh_config(self, dev, lines) -> str:
-        self.probed_until.pop(dev["id"], None)  # a real change: its inform should bring a backup
         with self.session(dev) as conn:
             conn.enable()
             # A "hostname" line changes the prompt mid-session, and netmiko would wait for the old one
@@ -693,7 +689,6 @@ class Ctx:
             if names := alloc.parse_ifnames(conn.send_command("show ip interface brief")):
                 caps["cap_ifnames"] = names  # its real port names: render refuses any other
             caps["pnp_zero_touch"] = has_pnp_zero_touch(conn.send_command("show running-config | include ^pnp profile"))
-        self.probed_until[dev["id"]] = time.time() + 30  # informs arrive within seconds of the session
         return ver, caps
 
     @staticmethod

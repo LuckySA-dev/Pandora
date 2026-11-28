@@ -13,8 +13,17 @@ MEM_HIGH = 90          # % of the processor memory pool          # % (5 min), li
 UNREACHABLE_AFTER = 3  # consecutive failed polls
 
 _fails: dict[int, int] = {}
-# ponytail: in memory, so after a restart a reserved port that is down alarms only once it has been up again
-_was_up: set[tuple[int, str]] = set()  # (device_id, port) seen up at least once
+_was_up: dict[tuple[int, str], bool] = {}  # (device_id, port) -> seen up at least once (memory + sample history)
+
+
+def _ever_up(db, did, port) -> bool:
+    """Has this port ever been up? Asked from the stored samples once per port and process (so a restart does not
+    forget a cabled management port), then kept in memory."""
+    key = (did, normalize_if(port))
+    if key not in _was_up:
+        _was_up[key] = bool(db.q("SELECT 1 FROM snmp_samples WHERE device_id=? AND name=? AND value='up' LIMIT 1",
+                                 did, f"{port}:oper"))
+    return _was_up[key]
 
 
 def raise_(ctx, device_id, key, severity, message):
@@ -80,11 +89,12 @@ def on_sample(ctx, device, sample: dict, prev: dict | None):
         was_up = prev is not None and prev.get(k) == "up"
         shut = sample.get(f"{port}:admin") == "down"  # someone shut it on purpose: not a fault
         if v == "up":
-            _was_up.add((did, normalize_if(port)))
-        if v == "down" and normalize_if(port) in reserved and (shut or (did, normalize_if(port)) in _was_up):
-            raise_(ctx, did, key, "high", f"Management port {port} is {'shut down' if shut else 'down'}")
-        elif v == "down" and normalize_if(port) in reserved:
-            resolve(ctx, did, key)  # the spare of two reserved ports, never cabled: no fault (bench 2960X)
+            _was_up[(did, normalize_if(port))] = True
+        if v == "down" and normalize_if(port) in reserved:
+            if shut or _ever_up(ctx.db, did, port):
+                raise_(ctx, did, key, "high", f"Management port {port} is {'shut down' if shut else 'down'}")
+            # else: the spare of two reserved ports, never cabled (bench 2960X): raise nothing, but never resolve
+            # a problem that is already open either
         elif shut:
             resolve(ctx, did, key)
         elif v == "down" and was_up:

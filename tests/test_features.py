@@ -504,26 +504,22 @@ def test_spare_reserved_port_never_cabled_is_no_alarm(ctx):
     assert alerts.open_problems(ctx.db, d["id"]) == []
     alerts.on_sample(ctx, d, {"Gi1/0/23:oper": "down", "Gi1/0/23:admin": "down"}, None)  # shut on purpose: still high
     assert [p["severity"] for p in alerts.open_problems(ctx.db, d["id"])] == ["high"]
+    alerts.on_sample(ctx, d, {"Gi1/0/23:oper": "down"}, None)  # never-up spare: an open alarm is not resolved
+    assert [p["severity"] for p in alerts.open_problems(ctx.db, d["id"])] == ["high"]
+    # a cabled mgmt port that was up before an app restart still alarms when it goes down
+    ctx.db.x("INSERT INTO snmp_samples VALUES (?,?,?,?)", d["id"], 1.0, "Gi1/0/24:oper", "up")
+    alerts._was_up.clear()
+    alerts.on_sample(ctx, d, {"Gi1/0/24:oper": "down"}, None)
+    assert any(p["key"] == "if:GigabitEthernet1/0/24" for p in alerts.open_problems(ctx.db, d["id"]))
 
 
-def test_pnp_zero_touch_profile_removed_and_probe_informs_skip_backup(ctx, monkeypatch):
-    import time
-
-    from pandora import deliver, monitor
+def test_pnp_zero_touch_profile_removed(ctx):
+    from pandora import deliver
     assert deliver.has_pnp_zero_touch("pnp profile pnp-zero-touch\n")
     assert not deliver.has_pnp_zero_touch("pnp profile mine\n")
     assert ctx.lines_with_cleanup("! c\nhostname a\n", {"pnp_zero_touch": True}) == [
         "hostname a", "no pnp profile pnp-zero-touch"]
     assert ctx.lines_with_cleanup("hostname a\n", {}) == ["hostname a"]
-    d = _provisioned(ctx)
-    ran = []
-    monkeypatch.setattr(monitor, "schedule_backup", lambda c, i: ran.append(i))
-    ctx.probed_until[d["id"]] = time.time() + 30  # just probed with `?`
-    monitor.on_trap(ctx, d["ip"], "configChange", [])
-    assert ran == []
-    ctx.probed_until.pop(d["id"])  # a real change since
-    monitor.on_trap(ctx, d["ip"], "configChange", [])
-    assert ran == [d["id"]]
 
 
 def test_backbone_reads_who_is_on_which_port_from_the_mac_table(ctx):
